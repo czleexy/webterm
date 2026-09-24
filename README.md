@@ -4,8 +4,9 @@
 
 服务跑在本机负责 SSH 协议栈与连接管理，浏览器只负责渲染与交互。免安装、跨平台，配置与会话集中在一处管理。
 
-> 当前进度：**阶段 0（工程骨架）已完成** —— 前后端链路打通，API 可用；SSH 终端将在阶段 1 交付。
+> 当前进度：**阶段 1（终端主干）已完成** —— 可用多标签 SSH 终端、PTY 尺寸同步、背压保护、算法自动降级、主机密钥 TOFU 校验。
 > 详细设计见 [`docs/01-功能框架与需求说明书.md`](docs/01-功能框架与需求说明书.md) 与 [`docs/02-实现计划.md`](docs/02-实现计划.md)。
+> 界面截图见 [`docs/screenshots/`](docs/screenshots/)。
 
 ---
 
@@ -35,7 +36,24 @@ npm run dev
 
 浏览器打开 <http://localhost:5173>。
 
-页面顶部状态点显示「服务在线」即表示前后端链路已打通。
+点击「新建 SSH 连接」填入主机信息即可建立终端。可先点「测试连接」确认连通性与认证，并查看实际协商出的算法与主机密钥指纹。
+
+---
+
+## 阶段 1 已交付能力
+
+| 能力 | 说明 |
+| --- | --- |
+| 多标签终端 | xterm.js 渲染，切换标签不丢滚动缓冲、不断开连接 |
+| PTY 尺寸同步 | 拖拽窗口 / 切换面板时自动 `window-change`，远端行宽实时跟随 |
+| 背压保护 | 双信号（客户端 ACK + WS 发送缓冲）控速，`cat` 大文件不会打爆内存 |
+| 编码支持 | UTF-8 零拷贝直通；GBK / GB18030 / Big5 由服务端增量转码，无跨包乱码 |
+| 算法自动降级 | 现代算法协商失败自动切换 legacy 档案，老旧交换机 / 路由器免配置 |
+| 主机密钥 TOFU | 首连记录指纹，指纹变化即拒绝，防中间人 |
+| 连接诊断 | 「测试连接」区分「连不上」/「认证失败」/「认证通过但拒绝会话」三类故障 |
+| 断线重连 | 网络抖动自动重连（3 次退避），令牌失效则明确提示 |
+
+**快捷键**：`Alt+T` 新建连接 · `Alt+W` 关闭标签 · `Alt+↑/↓` 切换标签
 
 ---
 
@@ -63,28 +81,31 @@ npm run dev -w @webterm/web
 
 ```
 webterm/
-├─ docs/                     设计与计划文档
+├─ docs/                     设计与计划文档（含界面截图）
 ├─ packages/
 │  ├─ shared/                前后端共享常量与类型（必须先构建）
-│  │  └─ src/{constants,api}.ts
+│  │  └─ src/{constants,api,ws}.ts
 │  ├─ server/                Fastify 服务端
+│  │  ├─ dev/mock-ssh-server.mjs   开发用 SSH 测试服务端
 │  │  └─ src/
 │  │     ├─ index.ts         进程入口（加载配置 → 建目录 → 监听）
 │  │     ├─ app.ts           Fastify 实例装配 + 静态托管 + 404 处理
 │  │     ├─ config/          环境变量校验（zod）
-│  │     └─ api/rest/        REST 路由
+│  │     ├─ ssh/             算法档案 / 连接建立 / 主机密钥 / 错误分类
+│  │     ├─ terminal/        终端会话 / 会话注册表 / 编码桥
+│  │     └─ api/
+│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals）
+│  │        └─ ws/           终端 WebSocket 端点
 │  └─ web/                   React 前端
 │     └─ src/
 │        ├─ api/             REST 请求封装
-│        ├─ components/      UI 组件
-│        ├─ hooks/           数据订阅
+│        ├─ components/      UI 组件（弹窗 / 标签栏 / 侧栏）
+│        ├─ terminal/        xterm 封装 / 连接 Hook / 配色
+│        ├─ store/           标签页状态（Zustand）
 │        ├─ theme/           主题状态（Zustand persist）
 │        └─ utils/
 └─ data/                     运行时数据（已被 git 忽略）
-   ├─ webterm.db             SQLite（阶段 2 起使用）
-   ├─ logs/                  会话日志（阶段 6 起使用）
-   ├─ keys/                  导入的 SSH 私钥（阶段 2 起使用）
-   └─ tmp/                   远程文件编辑中转（阶段 3 起使用）
+   └─ known_hosts.json       主机密钥指纹记录（TOFU）
 ```
 
 ---
@@ -114,7 +135,7 @@ webterm/
 {
   "ok": true,
   "name": "WebTerm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "uptimeSec": 42,
   "nodeVersion": "v22.22.2",
   "startedAt": "2026-09-24T03:20:11.000Z",
@@ -122,7 +143,42 @@ webterm/
 }
 ```
 
+### `GET /api/capabilities`
+
+返回 ssh2 版本、算法档案（modern / legacy 的完整算法清单）、支持的编码与背压水位。前端欢迎页据此展示，排障时可直接查看。
+
+### `POST /api/sessions/probe`
+
+只做「TCP + 握手 + 认证」，不开终端会话。返回协商算法、主机密钥指纹与告警列表 —— 用于「测试连接」，能区分「连不上」「认证失败」「认证通过但拒绝会话」三类故障。
+
+### `POST /api/terminals` / `GET /api/terminals` / `DELETE /api/terminals/:id`
+
+创建（此时已建立真实 SSH 连接，失败返回标准 HTTP 状态码 + 错误码）、列出、关闭终端。创建响应含一次性 `attachToken`。
+
+### `WS /ws/terminal/:terminalId?token=<attachToken>`
+
+**二进制帧** = 终端原始字节流（输入 / 输出）；**文本帧** = JSON 控制消息（`ready` / `resize` / `exit` / `error` / `flow` / `ack`）。协议定义见 `packages/shared/src/ws.ts`。
+
 未匹配到路由的 `/api/*` 请求统一返回 `{ "error": "NOT_FOUND", "message": "..." }`。
+
+---
+
+## 本地联调：开发用 SSH 测试服务端
+
+没有可用远端主机时，可以起一个内置的测试服务端做端到端验证：
+
+```bash
+node packages/server/dev/mock-ssh-server.mjs
+# 监听 127.0.0.1:2222，账号 demo / demo
+```
+
+支持的指令：`help` / `echo` / `cols`（验证 PTY 尺寸）/ `big <KB>`（验证背压）/ `utf8` / `gbk`（验证编码）/ `sleep` / `exit`。
+
+用 `MOCK_LEGACY=1` 启动可模拟只支持 SHA-1 算法的老设备，用于验证自动降级：
+
+```bash
+MOCK_LEGACY=1 MOCK_PORT=2223 node packages/server/dev/mock-ssh-server.mjs
+```
 
 ---
 
@@ -141,5 +197,6 @@ webterm/
 | 阶段 | 状态 |
 | --- | --- |
 | 0 工程骨架 | ✅ 已完成 |
-| 1 终端主干打通 | ⏳ 下一步 |
-| 2–8 | 待开发 |
+| 1 终端主干打通 | ✅ 已完成 |
+| 2 会话管理与持久化 | ⏳ 下一步 |
+| 3–8 | 待开发 |

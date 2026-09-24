@@ -5,7 +5,7 @@ async function main(): Promise<void> {
   const config = loadConfig()
   ensureDataDirs(config)
 
-  const app = await buildApp(config)
+  const { app } = await buildApp(config)
 
   let shuttingDown = false
   const shutdown = async (signal: string): Promise<void> => {
@@ -13,6 +13,7 @@ async function main(): Promise<void> {
     shuttingDown = true
     app.log.info(`收到 ${signal}，正在优雅关闭…`)
     try {
+      // app.close 会触发 onClose 钩子，进而关闭所有 SSH 终端会话
       await app.close()
       process.exit(0)
     } catch (err) {

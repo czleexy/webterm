@@ -13,8 +13,8 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
       uptimeSec: Math.round(process.uptime()),
       nodeVersion: process.version,
       startedAt: new Date(startedAtMs).toISOString(),
-      // 阶段 1 接入 SessionManager 后返回真实值
-      activeTabs: 0,
+      // 当前存活的终端数（含尚未被 WebSocket 附加的）
+      activeTabs: app.terminals.count,
     }
   })
 }

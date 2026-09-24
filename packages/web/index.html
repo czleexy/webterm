@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="WebTerm —— 基于 Node.js 的浏览器 SSH 客户端" />
+    <title>WebTerm · SSH 客户端</title>
+    <script>
+      // 首屏前置应用主题，避免深色模式下的白色闪烁
+      try {
+        var raw = localStorage.getItem('webterm.theme')
+        var mode = raw ? JSON.parse(raw).state.mode : 'light'
+        if (mode === 'dark') document.documentElement.classList.add('dark')
+        document.documentElement.style.colorScheme = mode
+      } catch (e) {
+        /* localStorage 不可用时按浅色渲染 */
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

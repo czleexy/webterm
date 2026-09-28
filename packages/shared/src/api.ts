@@ -106,7 +106,10 @@ export interface ProbeSessionResponse {
 
 /** POST /api/terminals */
 export interface CreateTerminalRequest {
-  config: SessionConfig
+  /** 直接指定连接参数（快速连接，不落库）；与 sessionId 二选一 */
+  config?: SessionConfig
+  /** 引用会话库中已保存的会话；服务端负责解析凭据与跳板链 */
+  sessionId?: string
   /** 用于在标签上显示的标题，缺省时由 host 推导 */
   title?: string
 }
@@ -166,6 +169,137 @@ export interface AlgorithmProfileInfo {
   mac: string[]
   compress: string[]
 }
+
+/* ================================================================== */
+/* 阶段 2：主密码保险库（Vault）与会话库（Library）                     */
+/* ================================================================== */
+
+/** GET /api/vault/status */
+export interface VaultStatusResponse {
+  /** 是否已设置主密码 */
+  initialized: boolean
+  /** 主密钥当前是否已解锁（重启服务后为 false） */
+  unlocked: boolean
+  /** 已保存的凭据数量（未解锁时为 undefined，避免泄露存在性） */
+  credentialCount?: number
+}
+
+/** POST /api/vault/setup —— 首次设置主密码 */
+export interface SetupVaultRequest {
+  masterPassword: string
+}
+
+export interface VaultOkResponse {
+  ok: boolean
+}
+
+/* ------------------------------------------------------------------ */
+/* 凭据 —— 读接口永不返回明文                                          */
+/* ------------------------------------------------------------------ */
+
+/** 凭据摘要（列表 / 引用展示用，绝无秘密字段） */
+export interface CredentialSummary {
+  id: string
+  name: string
+  type: AuthMethod
+  /** privateKey 凭据是否设置了口令 */
+  hasPassphrase?: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ListCredentialsResponse {
+  credentials: CredentialSummary[]
+}
+
+/** POST /api/credentials */
+export interface CreateCredentialRequest {
+  name: string
+  type: AuthMethod
+  /** type = password 时必填 */
+  password?: string
+  /** type = privateKey 时必填：PEM / OpenSSH 私钥内容 */
+  privateKey?: string
+  /** 私钥口令（可选） */
+  passphrase?: string
+}
+
+/** PATCH /api/credentials/:id —— 所有字段可选，未提供的保持不变 */
+export interface UpdateCredentialRequest {
+  name?: string
+  password?: string
+  privateKey?: string
+  /** 显式传空字符串表示清除私钥口令 */
+  passphrase?: string
+}
+
+/* ------------------------------------------------------------------ */
+/* 会话库 —— 文件夹 + 会话记录的树                                     */
+/* ------------------------------------------------------------------ */
+
+/** 跳板链中的一跳；认证信息通过 credentialId 引用保险库 */
+export interface JumpHop {
+  host: string
+  port: number
+  username: string
+  credentialId: string
+  legacyCompat?: 'auto' | 'always' | 'never'
+}
+
+/** 会话节点的可连接配置 */
+export interface SessionRecord {
+  host: string
+  port: number
+  username: string
+  /** 认证凭据引用（保险库中的凭据 id） */
+  credentialId: string
+  encoding: SupportedEncodingLiteral
+  term: string
+  legacyCompat: 'auto' | 'always' | 'never'
+  /** 跳板链，按连接顺序排列；最后一跳之后连接 record.host */
+  jumpChain: JumpHop[]
+}
+
+export type SupportedEncodingLiteral = 'utf8' | 'gbk' | 'gb18030' | 'big5' | 'latin1'
+
+/** 会话库树节点（GET /api/library） */
+export interface LibraryNode {
+  id: string
+  kind: 'folder' | 'session'
+  name: string
+  parentId: string | null
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+  /** kind = session 时存在 */
+  session?: SessionRecord
+}
+
+export interface LibraryTreeResponse {
+  nodes: LibraryNode[]
+}
+
+/** POST /api/library —— 新建文件夹或会话 */
+export interface CreateLibraryNodeRequest {
+  kind: 'folder' | 'session'
+  name: string
+  parentId?: string | null
+  sortOrder?: number
+  /** kind = session 时必填 */
+  session?: SessionRecord
+}
+
+/** PATCH /api/library/:id —— 部分更新 */
+export interface UpdateLibraryNodeRequest {
+  name?: string
+  parentId?: string | null
+  sortOrder?: number
+  session?: SessionRecord
+}
+
+/* ------------------------------------------------------------------ */
+/* CreateTerminal / Probe 的会话库引用形态                             */
+/* ------------------------------------------------------------------ */
 
 export interface CapabilitiesResponse {
   /** ssh2 版本 */

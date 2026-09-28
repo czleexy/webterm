@@ -10,7 +10,7 @@
  * 算法协商失败发生在握手阶段，此时连接尚未建立，重试成本极低且对用户完全透明。
  * 用户不需要知道目标设备有多老旧 —— 这正是客户端该替他处理的事。
  */
-import { Client, type ConnectConfig } from 'ssh2'
+import { Client, type ClientChannel, type ConnectConfig } from 'ssh2'
 import type { SshTarget } from '@webterm/shared'
 import { SSH_READY_TIMEOUT_MS } from '@webterm/shared'
 import { type AlgorithmProfile, resolveProfiles } from './algorithms.js'
@@ -51,6 +51,14 @@ export interface EstablishOptions {
   knownHosts?: KnownHostsStore
   /** 指纹不一致时是否仍接受 */
   acceptHostKeyMismatch?: boolean
+  /** 上游 socket（跳板链场景：由上一跳 forwardOut 提供）。不传则直连 */
+  sock?: import('node:stream').Readable
+  /**
+   * keyboard-interactive 自动应答的口令。
+   * 多数网络设备在密码认证之外还要求 keyboard-interactive 轮次，
+   * 自动应答存储的口令可以覆盖绝大多数场景；OTP 类手动交互留待阶段 7。
+   */
+  keyboardInteractivePassword?: string
   logger?: ConnectionLogger
 }
 
@@ -116,6 +124,14 @@ async function attemptConnect(
       )
     })
 
+    // keyboard-interactive：用存储的口令自动应答（覆盖多数网络设备的双轮认证）
+    client.on('keyboard-interactive', (name, _instructions, _lang, prompts, finish) => {
+      logger?.debug({ name, prompts: prompts.length }, 'keyboard-interactive 认证')
+      finish(
+        prompts.map(() => opts.keyboardInteractivePassword ?? '') satisfies string[],
+      )
+    })
+
     client.on('ready', () => {
       settle(() => {
         resolve({
@@ -147,6 +163,8 @@ async function attemptConnect(
       port: target.port,
       username: target.username,
       readyTimeout: SSH_READY_TIMEOUT_MS,
+      // 上游 socket 存在时（跳板链）忽略 host/port 的直连语义
+      ...(opts.sock ? { sock: opts.sock } : {}),
       // 关闭 SSH 层 keepalive 的默认值，改由上层按需控制，避免与 ws 心跳重复
       keepaliveInterval: 0,
       // 算法清单来自运行时读取 ssh2 的 SUPPORTED_* 列表（见 algorithms.ts），
@@ -281,3 +299,111 @@ export async function establishConnection(
 
 /** 供 /api/capabilities 展示的档案概要（实现在 algorithms.ts，此处仅转导出便于就近引用） */
 export { describeProfiles } from './algorithms.js'
+
+/* ------------------------------------------------------------------ */
+/* 跳板链（ProxyJump）                                                  */
+/* ------------------------------------------------------------------ */
+
+/** 链上的一跳：跳板或最终目标 */
+export interface ChainNode {
+  target: SshTarget
+  legacyCompat?: 'auto' | 'always' | 'never'
+}
+
+/**
+ * 经 forwardOut 逐跳打通到最终目标：
+ * conn(A).forwardOut(B) → sock → conn(B over sock).forwardOut(C) → sock → conn(C over sock)
+ *
+ * 每一跳都独立走算法降级与主机密钥校验（TOFU 按跳记录）。
+ * 中间跳失败时，已建立的连接会被显式关闭，不留悬挂 socket。
+ */
+export async function establishConnectionChain(
+  nodes: ChainNode[],
+  shared: Pick<EstablishOptions, 'knownHosts' | 'logger'>,
+): Promise<{ connection: EstablishedConnection; intermediate: EstablishedConnection[] }> {
+  if (nodes.length === 0) {
+    throw new SshError('INVALID_CONFIG', '连接链为空')
+  }
+  if (nodes.length > 5) {
+    throw new SshError('INVALID_CONFIG', '跳板链最深支持 5 级，当前层级过多')
+  }
+
+  const intermediate: EstablishedConnection[] = []
+  let upstreamSock: import('node:stream').Readable | undefined
+
+  try {
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i]
+      if (!node) throw new SshError('INVALID_CONFIG', `连接链第 ${i + 1} 跳缺失`)
+      const isLast = i === nodes.length - 1
+
+      const conn = await establishConnection({
+        target: node.target,
+        legacyCompat: node.legacyCompat ?? 'auto',
+        knownHosts: shared.knownHosts,
+        logger: shared.logger,
+        sock: upstreamSock,
+        keyboardInteractivePassword: node.target.password,
+      })
+
+      if (isLast) {
+        return { connection: conn, intermediate }
+      }
+
+      intermediate.push(conn)
+      shared.logger?.debug(
+        { hop: i + 1, next: `${node.target.host}:${node.target.port}` },
+        '打通到下一跳的转发通道',
+      )
+
+      const next = nodes[i + 1]
+      if (!next) throw new SshError('INVALID_CONFIG', `连接链第 ${i + 2} 跳缺失`)
+      upstreamSock = await forwardThrough(conn, next.target)
+    }
+    throw new SshError('INVALID_CONFIG', '不可达：连接链遍历异常')
+  } catch (err) {
+    // 失败时清理整条链，防止中间跳的 socket 泄漏占用远端资源
+    for (const conn of intermediate) {
+      try {
+        conn.client.end()
+      } catch {
+        /* 忽略 */
+      }
+    }
+    throw err
+  }
+}
+
+/** 在已就绪的连接上打开到目标的 direct-tcpip 通道（即 forwardOut） */
+function forwardThrough(conn: EstablishedConnection, target: SshTarget): Promise<ClientChannel> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new SshError(
+          'FORWARD_TIMEOUT',
+          `通过跳板打开到 ${target.host}:${target.port} 的转发通道超时`,
+        ),
+      )
+    }, SSH_READY_TIMEOUT_MS)
+
+    conn.client.forwardOut(
+      '127.0.0.1',
+      0,
+      target.host,
+      target.port,
+      (err, stream) => {
+        clearTimeout(timer)
+        if (err) {
+          reject(
+            new SshError(
+              'FORWARD_REJECTED',
+              `跳板机拒绝转发到 ${target.host}:${target.port}：${err.message}`,
+            ),
+          )
+          return
+        }
+        resolve(stream)
+      },
+    )
+  })
+}

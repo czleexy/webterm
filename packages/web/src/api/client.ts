@@ -2,14 +2,23 @@ import {
   API_PREFIX,
   type ApiError,
   type CapabilitiesResponse,
+  type CreateCredentialRequest,
+  type CreateLibraryNodeRequest,
   type CreateTerminalRequest,
   type CreateTerminalResponse,
+  type CredentialSummary,
   type HealthResponse,
+  type LibraryNode,
+  type LibraryTreeResponse,
+  type ListCredentialsResponse,
   type ListTerminalsResponse,
   type ProbeSessionRequest,
   type ProbeSessionResponse,
   type SessionConfig,
   type SshTarget,
+  type UpdateCredentialRequest,
+  type UpdateLibraryNodeRequest,
+  type VaultStatusResponse,
 } from '@webterm/shared'
 
 export class ApiRequestError extends Error {
@@ -87,6 +96,77 @@ export function createTerminal(body: CreateTerminalRequest): Promise<CreateTermi
 
 export function closeTerminal(terminalId: string): Promise<void> {
   return request<void>(`/terminals/${encodeURIComponent(terminalId)}`, { method: 'DELETE' })
+}
+
+/* ---------------- 阶段 2：保险库 / 凭据 / 会话库 ---------------- */
+
+export function fetchVaultStatus(): Promise<VaultStatusResponse> {
+  return request<VaultStatusResponse>('/vault/status')
+}
+
+export function setupVault(masterPassword: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/vault/setup', {
+    method: 'POST',
+    body: JSON.stringify({ masterPassword }),
+  })
+}
+
+export function unlockVault(masterPassword: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/vault/unlock', {
+    method: 'POST',
+    body: JSON.stringify({ masterPassword }),
+  })
+}
+
+export function lockVault(): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/vault/lock', { method: 'POST' })
+}
+
+export function listCredentials(): Promise<ListCredentialsResponse> {
+  return request<ListCredentialsResponse>('/credentials')
+}
+
+export function createCredential(body: CreateCredentialRequest): Promise<CredentialSummary> {
+  return request<CredentialSummary>('/credentials', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function updateCredential(
+  id: string,
+  body: UpdateCredentialRequest,
+): Promise<CredentialSummary> {
+  return request<CredentialSummary>(`/credentials/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteCredential(id: string): Promise<void> {
+  return request<void>(`/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function fetchLibrary(): Promise<LibraryTreeResponse> {
+  return request<LibraryTreeResponse>('/library')
+}
+
+export function createLibraryNode(body: CreateLibraryNodeRequest): Promise<LibraryNode> {
+  return request<LibraryNode>('/library', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function updateLibraryNode(
+  id: string,
+  body: UpdateLibraryNodeRequest,
+): Promise<LibraryNode> {
+  return request<LibraryNode>(`/library/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteLibraryNode(id: string): Promise<void> {
+  return request<void>(`/library/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 /** 由浏览器当前地址推导 WebSocket 基址，兼容开发态 Vite 代理与生产态同源部署 */

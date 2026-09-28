@@ -6,13 +6,15 @@
  * 数据库只负责持久化会话配置与凭据，两者职责不重叠。
  */
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import type { SessionConfig, TerminalListItem } from '@webterm/shared'
+import type { SessionConfig, SshTarget, TerminalListItem } from '@webterm/shared'
 import { TERMINAL_ATTACH_GRACE_MS, TERMINAL_IDLE_TIMEOUT_MS } from '@webterm/shared'
 import { TerminalSession, type TerminalLogger } from './terminal-session.js'
 import type { KnownHostsStore } from '../ssh/known-hosts.js'
 
 export interface CreateTerminalOptions {
   config: SessionConfig
+  /** 跳板链（已解密为明文 target，按连接顺序）；最后一跳之后才是 config.target */
+  jumpChain?: SshTarget[]
   title: string
 }
 
@@ -63,6 +65,7 @@ export class TerminalManager {
       attachToken: randomBytes(24).toString('base64url'),
       title: opts.title,
       config: opts.config,
+      jumpChain: opts.jumpChain,
       knownHosts: this.knownHosts,
       logger: this.logger,
     })

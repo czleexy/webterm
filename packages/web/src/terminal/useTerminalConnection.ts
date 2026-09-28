@@ -213,7 +213,10 @@ export function useTerminalConnection({
 
     const bootstrap = async () => {
       try {
-        const conn = await createTerminal({ config: tab.config, title: tab.title })
+        // 会话库引用与快速连接两条路径；前者连接参数由服务端解析
+        const conn = tab.sessionId
+          ? await createTerminal({ sessionId: tab.sessionId, title: tab.title })
+          : await createTerminal({ config: tab.config, title: tab.title })
         if (disposedRef.current) {
           // 组件已卸载：回收刚创建的服务端终端，避免留下无人使用的 SSH 连接
           void closeTerminal(conn.terminalId).catch(() => {})

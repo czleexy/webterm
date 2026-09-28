@@ -18,6 +18,11 @@
  *   MOCK_USER    用户名，默认 demo
  *   MOCK_PASS    口令，默认 demo
  *   MOCK_LEGACY  设为 1 时只提供 legacy 算法，用于验证客户端的自动降级逻辑
+ *   MOCK_AUTH    password（默认）| publickey，验证密钥认证链路
+ *
+ * 跳板链支持：本服务端接受 direct-tcpip 通道请求（即 ssh -L/-W 的服务端行为），
+ * 因此把多个实例串联即可验证 ProxyJump：A(2222) → B(2223) → C(2224)。
+ * 公钥认证模式下公钥经 stdin 传入（一行 base64），避免密钥落盘。
  *
  * 仅用于本地开发与测试，切勿部署到生产环境。
  */
@@ -31,6 +36,20 @@ const HOST = process.env.MOCK_HOST || '127.0.0.1'
 const USER = process.env.MOCK_USER || 'demo'
 const PASS = process.env.MOCK_PASS || 'demo'
 const LEGACY_ONLY = process.env.MOCK_LEGACY === '1'
+const AUTH_MODE = process.env.MOCK_AUTH || 'password'
+
+/** 一次性客户端公钥（公钥认证模式）：经 stdin 传入一行 base64 */
+const authorizedPubKeys = []
+if (AUTH_MODE === 'publickey') {
+  process.stdin.setEncoding('utf8')
+  const chunks = []
+  for await (const chunk of process.stdin) chunks.push(chunk)
+  for (const line of chunks.join('').split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (trimmed.length > 0) authorizedPubKeys.push(Buffer.from(trimmed, 'base64'))
+  }
+  console.log(`[mock-ssh] 公钥认证模式，已装载 ${authorizedPubKeys.length} 把公钥`)
+}
 
 /** 生成一次性主机密钥（仅开发用；生产客户端应使用持久化密钥） */
 const hostKey = utils.generateKeyPairSync('rsa', { bits: 2048 })
@@ -58,6 +77,23 @@ const server = new Server(
     let authed = false
 
     client.on('authentication', (ctx) => {
+      if (AUTH_MODE === 'publickey') {
+        // ssh2 服务端会先以无签名方式询问该公钥是否可接受，再带签名重发一次；
+        // 我们只按「key blob 是否在授权列表」判断，签名校验由 ssh2 自行完成
+        if (ctx.method === 'publickey' && ctx.key && !ctx.signature) {
+          const acceptable = authorizedPubKeys.some((p) => p.equals(ctx.key.data))
+          return acceptable ? ctx.accept() : ctx.reject()
+        }
+        if (ctx.method === 'publickey' && ctx.key && ctx.signature) {
+          const ok = authorizedPubKeys.some((p) => p.equals(ctx.key.data))
+          if (ok && ctx.username === USER) {
+            authed = true
+            return ctx.accept()
+          }
+        }
+        return ctx.reject(['publickey'])
+      }
+
       if (ctx.method === 'password' && ctx.username === USER && ctx.password === PASS) {
         authed = true
         return ctx.accept()
@@ -68,6 +104,34 @@ const server = new Server(
 
     client.on('ready', () => {
       console.log('[mock-ssh] 客户端认证通过')
+
+      // 跳板链支持：接受 direct-tcpip，把流量转发到目标地址
+      client.on('direct-tcpip', (accept, reject, info) => {
+        console.log(`[mock-ssh] direct-tcpip -> ${info.destIP}:${info.destPort}`)
+        const net = require('node:net')
+        const upstream = net.connect(info.destPort, info.destIP, () => {
+          const channel = accept()
+          upstream.pipe(channel).pipe(upstream)
+          const cleanup = () => {
+            try {
+              upstream.destroy()
+              channel.close()
+            } catch {
+              /* 忽略 */
+            }
+          }
+          upstream.on('error', cleanup)
+          channel.on('close', cleanup)
+        })
+        upstream.on('error', (err) => {
+          console.log(`[mock-ssh] direct-tcpip 上游连接失败: ${err.message}`)
+          try {
+            reject()
+          } catch {
+            /* 忽略 */
+          }
+        })
+      })
 
       client.on('session', (accept) => {
         const session = accept()

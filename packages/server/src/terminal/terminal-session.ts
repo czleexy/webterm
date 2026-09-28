@@ -26,11 +26,16 @@ import {
   type ClientControlMessage,
   type ServerControlMessage,
   type SessionConfig,
+  type SshTarget,
   type SupportedEncoding,
   type TerminalErrorCode,
   type TerminalNegotiationInfo,
 } from '@webterm/shared'
-import { establishConnection, type EstablishedConnection } from '../ssh/connection.js'
+import {
+  establishConnection,
+  establishConnectionChain,
+  type EstablishedConnection,
+} from '../ssh/connection.js'
 import { classifySshError, SshError } from '../ssh/errors.js'
 import type { KnownHostsStore } from '../ssh/known-hosts.js'
 import { createEncodingBridge, type EncodingBridge } from './encoding.js'
@@ -40,6 +45,8 @@ export interface TerminalSessionOptions {
   attachToken: string
   title: string
   config: SessionConfig
+  /** 跳板链（已解密为明文 target，按连接顺序）；最后一跳之后才是 config.target */
+  jumpChain?: SshTarget[]
   knownHosts: KnownHostsStore
   acceptHostKeyMismatch?: boolean
   logger: TerminalLogger
@@ -80,6 +87,8 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
 
   private state: TerminalState = 'connecting'
   private conn: EstablishedConnection | undefined
+  /** 跳板链上的中间连接；会话关闭时需一并释放 */
+  private intermediateConns: EstablishedConnection[] = []
   private stream: ClientChannel | undefined
   private ws: WebSocket | undefined
 
@@ -139,14 +148,28 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
    */
   async start(): Promise<TerminalNegotiationInfo> {
     const { target, terminal, legacyCompat } = this.config
+    const jumpChain = this.opts.jumpChain ?? []
 
-    const conn = await establishConnection({
-      target,
-      legacyCompat: legacyCompat ?? 'auto',
-      knownHosts: this.opts.knownHosts,
-      acceptHostKeyMismatch: this.opts.acceptHostKeyMismatch === true,
-      logger: this.logger,
-    })
+    // 有跳板链时逐跳 forwardOut 打通；否则直连
+    const chain = await (jumpChain.length > 0
+      ? establishConnectionChain(
+          [...jumpChain.map((t) => ({ target: t })), { target, legacyCompat: legacyCompat ?? 'auto' }],
+          { knownHosts: this.opts.knownHosts, logger: this.logger },
+        )
+      : Promise.resolve({
+          connection: await establishConnection({
+            target,
+            legacyCompat: legacyCompat ?? 'auto',
+            knownHosts: this.opts.knownHosts,
+            acceptHostKeyMismatch: this.opts.acceptHostKeyMismatch === true,
+            keyboardInteractivePassword: target.password,
+            logger: this.logger,
+          }),
+          intermediate: [] as EstablishedConnection[],
+        }))
+
+    const conn = chain.connection
+    this.intermediateConns = chain.intermediate
 
     this.conn = conn
     this.serverIdent = conn.serverIdent
@@ -536,6 +559,15 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     } catch {
       /* 忽略 */
     }
+    // 释放跳板链上的全部中间连接，避免占用远端转发资源
+    for (const conn of this.intermediateConns) {
+      try {
+        conn.client.end()
+      } catch {
+        /* 忽略 */
+      }
+    }
+    this.intermediateConns = []
 
     const ws = this.ws
     if (ws && ws.readyState === ws.OPEN) {

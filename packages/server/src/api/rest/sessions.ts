@@ -8,17 +8,43 @@
  */
 import type { FastifyPluginAsync } from 'fastify'
 import type { ProbeSessionResponse } from '@webterm/shared'
+import { LibraryError } from '../../db/library.js'
+import { VaultError } from '../../security/vault.js'
 import { establishConnection } from '../../ssh/connection.js'
 import { classifySshError } from '../../ssh/errors.js'
 import { ProbeSessionRequestSchema } from '../schemas.js'
-import { sendSshError, sendValidationError } from '../errors.js'
+import { sendError, sendSshError, sendValidationError } from '../errors.js'
 
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.post('/sessions/probe', async (request, reply) => {
     const parsed = ProbeSessionRequestSchema.safeParse(request.body)
     if (!parsed.success) return sendValidationError(reply, parsed.error)
 
-    const { target, legacyCompat } = parsed.data
+    const input = parsed.data
+    let target = input.target
+    let legacyCompat = input.legacyCompat
+
+    if (input.sessionId && !target) {
+      try {
+        const { record } = app.library.getSessionRecord(input.sessionId)
+        const plan = app.sessionResolver.resolve(record)
+        target = plan.target
+        // 未显式指定策略时采用会话保存的策略
+        legacyCompat = legacyCompat ?? record.legacyCompat
+      } catch (err) {
+        if (err instanceof VaultError) {
+          return sendError(reply, 423, err.code, err.message)
+        }
+        if (err instanceof LibraryError) {
+          const status = err.code === 'NOT_FOUND' ? 404 : 400
+          return sendError(reply, status, err.code, err.message)
+        }
+        throw err
+      }
+    }
+    if (!target) {
+      return sendError(reply, 400, 'INVALID_CONFIG', '缺少连接参数')
+    }
 
     let conn
     try {
@@ -27,6 +53,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         legacyCompat: legacyCompat ?? 'auto',
         // 探测阶段仍做主机密钥校验，这样「指纹不一致」能在测试连接时就被发现
         knownHosts: app.knownHosts,
+        keyboardInteractivePassword: target.password,
         logger: app.log,
       })
     } catch (err) {

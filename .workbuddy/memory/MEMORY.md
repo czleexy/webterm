@@ -20,6 +20,14 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 - git 未配置全局 user.name/user.email，提交需 `git -c user.name="..." -c user.email="..." commit`
 - PowerShell 工具在本环境不回传 stdout，验证输出请用 bash + `node -e` 或重定向到文件后读取
 - `npm view <pkg> version` 调用较慢，一次查太多包会被超时中断，建议每批不超过 5 个包并给足 timeout
+- ⚠️ **编辑工具偶发「报告成功但未落盘」**，尤其是同一批并行 Edit 中的部分调用。改完关键文件后**必须 grep 核实**，否则会浪费大量时间排查幽灵类型错误
+- ⚠️ **tsc 增量缓存（`.tsbuildinfo`）会造成幽灵类型错误**：报「属性不存在」但文件里明明有。症状出现时 `rm -f packages/*/dist/.tsbuildinfo` 后重跑即可
+
+## 状态与进度（2026-09-28）
+
+- 已完成：阶段 0（骨架）、阶段 1（终端主干）、阶段 2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）
+- 下一步：阶段 3 SFTP 文件传输
+- 阶段 2 的完整 E2E 脚本在 `data/tmp/e2e-phase2.mjs`（自管 4 个 mock + 服务端重启），**其执行曾被环境敏感内容审批拦截**，需要用户授权后重跑确认
 
 ## 项目约定
 
@@ -40,6 +48,15 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 - TypeScript 用 **5.9.3**；npm 上的 latest 是 7.0.2（原生重写版），未采用，避免生态兼容风险
 - `@xterm/xterm` 用 **6.0.0**（addon-fit 0.11 / web-links 0.12 / search 0.16），CSS 在 `@xterm/xterm/css/xterm.css`
 - `ssh2` 的算法常量在 `ssh2/lib/protocol/constants.js`（无 `exports` 限制可深导入），但它是 CJS —— **ESM 里具名导入会报错**，必须用 `createRequire` 后解构
+- `utils.generateKeyPairSync('ed25519', { passphrase })` 生成带口令私钥时**必须同时给 `cipher`**（如 `aes256-ctr`），否则抛 `Missing cipher name`
+
+## 安全实现要点（阶段 2）
+
+- 主密钥由 `scrypt(password, salt, N=2^15, r=8, p=1)` 派生，**只存进程内存**，`lock()` 时 `fill(0)` 清零
+- 凭据存储格式：`AES-256-GCM`，密文 = `iv(12B) | authTag(16B) | ciphertext`，整体存 SQLite BLOB
+- 解锁校验用「已知明文的密文」（verifier），不用独立哈希 —— 少一套逻辑，且 GCM 的 authTag 天然防篡改
+- 锁定态访问需凭据的接口返回 **423 Locked**（区别于 401 认证失败）
+- mock SSH 服务端支持 `direct-tcpip`（当跳板机用）与 `MOCK_AUTH=publickey`（公钥经 stdin 传入，不落盘）
 
 ## 真机 192.168.1.254 的实测结论（重要）
 

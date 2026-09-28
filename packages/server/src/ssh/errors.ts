@@ -190,5 +190,8 @@ export const ERROR_CODE_DESCRIPTION: Record<TerminalErrorCode, string> = {
   CHANNEL_REJECTED: '远端拒绝开启会话',
   PTY_FAILED: 'PTY 分配失败',
   TRANSPORT: '传输层错误',
+  INVALID_CONFIG: '请求参数非法',
+  FORWARD_REJECTED: '跳板机拒绝转发',
+  FORWARD_TIMEOUT: '跳板机转发超时',
   INTERNAL: '服务端内部错误',
 }

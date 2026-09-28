@@ -67,7 +67,13 @@ export type TerminalErrorCode =
   | 'PTY_FAILED'
   /** 传输层错误 */
   | 'TRANSPORT'
-  /** 内部错误 */
+  /** 请求参数非法（如跳板链层级超限） */
+  | 'INVALID_CONFIG'
+  /** 跳板机拒绝建立转发通道 */
+  | 'FORWARD_REJECTED'
+  /** 跳板机转发通道建立超时 */
+  | 'FORWARD_TIMEOUT'
+  /** 服务端内部错误 */
   | 'INTERNAL'
 
 /** 建连后回传给前端的协商信息，用于「连接信息」面板展示 */

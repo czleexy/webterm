@@ -4,7 +4,7 @@
 
 服务跑在本机负责 SSH 协议栈与连接管理，浏览器只负责渲染与交互。免安装、跨平台，配置与会话集中在一处管理。
 
-> 当前进度：**阶段 1（终端主干）已完成** —— 可用多标签 SSH 终端、PTY 尺寸同步、背压保护、算法自动降级、主机密钥 TOFU 校验。
+> 当前进度：**阶段 2（会话管理与持久化）已交付** —— 会话库（分组 / 树）、主密码保险库（AES-256-GCM 加密凭据）、密钥登录、跳板机 ProxyJump。
 > 详细设计见 [`docs/01-功能框架与需求说明书.md`](docs/01-功能框架与需求说明书.md) 与 [`docs/02-实现计划.md`](docs/02-实现计划.md)。
 > 界面截图见 [`docs/screenshots/`](docs/screenshots/)。
 
@@ -91,21 +91,25 @@ webterm/
 │  │     ├─ index.ts         进程入口（加载配置 → 建目录 → 监听）
 │  │     ├─ app.ts           Fastify 实例装配 + 静态托管 + 404 处理
 │  │     ├─ config/          环境变量校验（zod）
-│  │     ├─ ssh/             算法档案 / 连接建立 / 主机密钥 / 错误分类
+│  │     ├─ db/              SQLite 打开与迁移、会话库 DAO
+│  │     ├─ security/        保险库（主密码 KDF + AES-GCM）、凭据存取
+│  │     ├─ ssh/             算法档案 / 连接建立 / 跳板链 / 主机密钥 / 错误分类
 │  │     ├─ terminal/        终端会话 / 会话注册表 / 编码桥
 │  │     └─ api/
-│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals）
+│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals / vault / credentials / library）
+│  │        ├─ resolver.ts   会话记录 → 明文连接参数
 │  │        └─ ws/           终端 WebSocket 端点
 │  └─ web/                   React 前端
 │     └─ src/
 │        ├─ api/             REST 请求封装
-│        ├─ components/      UI 组件（弹窗 / 标签栏 / 侧栏）
+│        ├─ components/      UI 组件（门禁 / 弹窗 / 标签栏 / 会话库侧栏）
 │        ├─ terminal/        xterm 封装 / 连接 Hook / 配色
-│        ├─ store/           标签页状态（Zustand）
+│        ├─ store/           标签页 / 保险库 / 会话库状态（Zustand）
 │        ├─ theme/           主题状态（Zustand persist）
 │        └─ utils/
 └─ data/                     运行时数据（已被 git 忽略）
-   └─ known_hosts.json       主机密钥指纹记录（TOFU）
+   ├─ webterm.db              SQLite（会话库 + 加密凭据）
+   └─ known_hosts.json        主机密钥指纹记录（TOFU）
 ```
 
 ---
@@ -155,6 +159,23 @@ webterm/
 
 创建（此时已建立真实 SSH 连接，失败返回标准 HTTP 状态码 + 错误码）、列出、关闭终端。创建响应含一次性 `attachToken`。
 
+请求体二选一：`{ config }`（快速连接，前端直传）或 `{ sessionId }`（引用会话库，服务端负责解密凭据并组装跳板链）。
+
+### 保险库 / 凭据 / 会话库（阶段 2）
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/vault/status` | `{ initialized, unlocked, credentialCount? }` |
+| `POST /api/vault/setup` | 首次设置主密码（≥8 位）；已初始化返回 409 |
+| `POST /api/vault/unlock` | 解锁；密码错误返回 401，未初始化返回 409 |
+| `POST /api/vault/lock` | 立即锁定并清零内存中的主密钥 |
+| `GET /api/credentials` | 只返回摘要（无明文）：`{ id, name, type, hasPassphrase? }` |
+| `POST/PATCH/DELETE /api/credentials[/:id]` | 增改删；删除时若仍被会话引用返回 409 `CREDENTIAL_IN_USE` |
+| `GET /api/library` | 返回扁平节点列表（含 `parentId` / `sortOrder` / `session`），前端自行组树 |
+| `POST/PATCH/DELETE /api/library[/:id]` | 建节点 / 改名称与归属与会话配置 / 删除（分组递归）；循环引用返回 409 `CYCLE` |
+
+需要解锁的接口在锁定态返回 **423 Locked** + `error: "LOCKED"`。
+
 ### `WS /ws/terminal/:terminalId?token=<attachToken>`
 
 **二进制帧** = 终端原始字节流（输入 / 输出）；**文本帧** = JSON 控制消息（`ready` / `resize` / `exit` / `error` / `flow` / `ack`）。协议定义见 `packages/shared/src/ws.ts`。
@@ -180,6 +201,21 @@ node packages/server/dev/mock-ssh-server.mjs
 MOCK_LEGACY=1 MOCK_PORT=2223 node packages/server/dev/mock-ssh-server.mjs
 ```
 
+**验证跳板链**：本服务端接受 `direct-tcpip`（即充当跳板机），把多个实例串起来即可：
+
+```bash
+MOCK_PORT=2222 node packages/server/dev/mock-ssh-server.mjs   # 跳板 A
+MOCK_PORT=2223 node packages/server/dev/mock-ssh-server.mjs   # 跳板 B
+MOCK_PORT=2224 node packages/server/dev/mock-ssh-server.mjs   # 目标 C
+# 会话里配置：主机 127.0.0.1:2224，跳板链填 2222 → 2223
+```
+
+**验证密钥登录**：以公钥模式启动，并把公钥 base64 从 stdin 传入：
+
+```bash
+printf '<公钥的 base64 blob>\n' | MOCK_AUTH=publickey MOCK_PORT=2225 node packages/server/dev/mock-ssh-server.mjs
+```
+
 ---
 
 ## 开发约定
@@ -198,5 +234,6 @@ MOCK_LEGACY=1 MOCK_PORT=2223 node packages/server/dev/mock-ssh-server.mjs
 | --- | --- |
 | 0 工程骨架 | ✅ 已完成 |
 | 1 终端主干打通 | ✅ 已完成 |
-| 2 会话管理与持久化 | ⏳ 下一步 |
-| 3–8 | 待开发 |
+| 2 会话管理与持久化 | ✅ 已完成 |
+| 3 SFTP 文件传输 | ⏳ 下一步 |
+| 4–8 | 待开发 |

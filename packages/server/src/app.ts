@@ -10,18 +10,30 @@ import { healthRoutes } from './api/rest/health.js'
 import { sessionRoutes } from './api/rest/sessions.js'
 import { terminalRoutes } from './api/rest/terminals.js'
 import { capabilityRoutes } from './api/rest/capabilities.js'
+import { vaultRoutes } from './api/rest/vault.js'
+import { credentialRoutes } from './api/rest/credentials.js'
+import { libraryRoutes } from './api/rest/library.js'
 import { terminalWsRoutes } from './api/ws/terminal.js'
 import { KnownHostsStore } from './ssh/known-hosts.js'
 import { TerminalManager } from './terminal/terminal-manager.js'
+import { Vault } from './security/vault.js'
+import { CredentialStore } from './security/credential-store.js'
+import { LibraryStore } from './db/library.js'
+import { openDatabase } from './db/index.js'
+import { SessionResolver } from './api/resolver.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-// 让各路由插件能通过 app.terminals / app.knownHosts 访问共享状态，
+// 让各路由插件能通过 app.terminals / app.vault 等访问共享状态，
 // 避免把依赖一层层往下传参
 declare module 'fastify' {
   interface FastifyInstance {
     terminals: TerminalManager
     knownHosts: KnownHostsStore
+    vault: Vault
+    credentials: CredentialStore
+    library: LibraryStore
+    sessionResolver: SessionResolver
   }
 }
 
@@ -57,11 +69,25 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   const knownHosts = new KnownHostsStore(config.dataDir)
   const terminals = new TerminalManager(knownHosts, app.log)
 
+  // 阶段 2：持久化与凭据保险库
+  const db = openDatabase(config.dbFile)
+  const vault = new Vault(db)
+  const credentials = new CredentialStore(db, vault)
+  const library = new LibraryStore(db, credentials)
+  const sessionResolver = new SessionResolver(credentials)
+
   app.decorate('knownHosts', knownHosts)
   app.decorate('terminals', terminals)
-  // 进程退出时统一关闭所有 SSH 连接，避免留下悬挂会话占用远端 VTY
+  app.decorate('vault', vault)
+  app.decorate('credentials', credentials)
+  app.decorate('library', library)
+  app.decorate('sessionResolver', sessionResolver)
+  // 进程退出时统一关闭所有 SSH 连接，避免留下悬挂会话占用远端 VTY；
+  // 保险库清零内存密钥，数据库正常关闭（WAL checkpoint）
   app.addHook('onClose', async () => {
     terminals.dispose()
+    vault.lock()
+    db.close()
   })
 
   await app.register(fastifyWebsocket, {
@@ -74,6 +100,9 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
 
   await app.register(healthRoutes, { prefix: API_PREFIX })
   await app.register(capabilityRoutes, { prefix: API_PREFIX })
+  await app.register(vaultRoutes, { prefix: API_PREFIX })
+  await app.register(credentialRoutes, { prefix: API_PREFIX })
+  await app.register(libraryRoutes, { prefix: API_PREFIX })
   await app.register(sessionRoutes, { prefix: API_PREFIX })
   await app.register(terminalRoutes, { prefix: API_PREFIX })
   await app.register(terminalWsRoutes, { prefix: WS_PATH })

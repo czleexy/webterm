@@ -16,7 +16,10 @@ export interface TerminalTab {
   /** 客户端侧唯一 id，与页签一一对应 */
   id: string
   title: string
-  config: SessionConfig
+  /** 快速连接时的直传配置；与会话库引用二选一 */
+  config?: SessionConfig
+  /** 会话库引用：连接参数由服务端解析（凭据 + 跳板链） */
+  sessionId?: string
   status: TabStatus
   /** 服务端终端 id（创建成功后才有） */
   terminalId?: string
@@ -65,6 +68,18 @@ export function newTab(config: SessionConfig, title?: string): TerminalTab {
       cols: config.terminal.cols || DEFAULT_TERM_COLS,
       rows: config.terminal.rows || DEFAULT_TERM_ROWS,
     },
+    createdAt: Date.now(),
+  }
+}
+
+/** 从会话库记录创建标签：连接参数由服务端解析 */
+export function newTabFromSession(sessionId: string, title: string): TerminalTab {
+  return {
+    id: createTabId(),
+    title: title.trim() || '会话',
+    sessionId,
+    status: 'connecting',
+    dims: { cols: DEFAULT_TERM_COLS, rows: DEFAULT_TERM_ROWS },
     createdAt: Date.now(),
   }
 }

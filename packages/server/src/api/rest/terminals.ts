@@ -10,9 +10,12 @@ import type {
   CreateTerminalRequest,
   CreateTerminalResponse,
   ListTerminalsResponse,
+  SshTarget,
   TerminalListItem,
 } from '@webterm/shared'
-import { WS_PATH } from '@webterm/shared'
+import { DEFAULT_TERM_COLS, DEFAULT_TERM_ROWS, WS_PATH } from '@webterm/shared'
+import { LibraryError } from '../../db/library.js'
+import { VaultError } from '../../security/vault.js'
 import { SshError } from '../../ssh/errors.js'
 import { CreateTerminalRequestSchema } from '../schemas.js'
 import { sendError, sendSshError, sendValidationError } from '../errors.js'
@@ -25,6 +28,7 @@ function defaultTitle(host: string, port: number, username: string): string {
 
 export const terminalRoutes: FastifyPluginAsync = async (app) => {
   const manager = app.terminals
+  const resolver = app.sessionResolver
 
   app.get('/terminals', async (): Promise<ListTerminalsResponse> => {
     return { terminals: manager.list() }
@@ -35,17 +39,55 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) return sendValidationError(reply, parsed.error)
 
     const input: CreateTerminalRequest = parsed.data
-    const { target, terminal, legacyCompat } = input.config
+
+    // 两条装配路径：sessionId（会话库引用，服务端解密凭据 + 组装跳板链）
+    // 或 config（快速连接，前端直传，不落库）
+    let target = input.config?.target
+    let terminalOpts = input.config?.terminal
+    let legacyCompat = input.config?.legacyCompat ?? 'auto'
+    let jumpChain: SshTarget[] | undefined
+
+    if (input.sessionId) {
+      try {
+        const { record } = app.library.getSessionRecord(input.sessionId)
+        const plan = resolver.resolve(record)
+        target = plan.target
+        jumpChain = plan.jumpChain.length > 0 ? plan.jumpChain : undefined
+        legacyCompat = record.legacyCompat
+        terminalOpts = {
+          cols: input.config?.terminal.cols ?? DEFAULT_TERM_COLS,
+          rows: input.config?.terminal.rows ?? DEFAULT_TERM_ROWS,
+          encoding: record.encoding,
+          term: record.term,
+        }
+      } catch (err) {
+        if (err instanceof VaultError) {
+          return sendError(reply, 423, err.code, err.message)
+        }
+        if (err instanceof LibraryError) {
+          const status = err.code === 'NOT_FOUND' ? 404 : 400
+          return sendError(reply, status, err.code, err.message)
+        }
+        app.log.error({ err }, '解析会话配置失败')
+        return sendError(reply, 500, 'INTERNAL', '解析会话配置失败')
+      }
+    }
+
+    if (!target || !terminalOpts) {
+      return sendError(reply, 400, 'INVALID_CONFIG', '缺少连接参数')
+    }
 
     let session
     try {
       session = await manager.create({
         config: {
           target,
-          terminal,
-          legacyCompat: legacyCompat ?? 'auto',
+          terminal: terminalOpts,
+          legacyCompat,
         },
-        title: input.title ?? defaultTitle(target.host, target.port, target.username),
+        jumpChain,
+        title:
+          input.title ?? defaultTitle(target.host, target.port, target.username),
       })
     } catch (err) {
       if (err instanceof SshError) return sendSshError(reply, err)

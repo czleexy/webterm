@@ -25,6 +25,9 @@ const KDF_KEY_LEN = 32
 const KDF_N = 2 ** 15
 const KDF_R = 8
 const KDF_P = 1
+// scrypt 实际占用 128*N*r = 32MiB，恰好等于 Node 默认 maxmem 上限（32MiB）会被判超限，
+// 抛 ERR_CRYPTO_INVALID_SCRYPT_PARAMS。必须显式放宽到 2 倍留出余量。
+const KDF_MAXMEM = 128 * KDF_N * KDF_R * 2
 
 const VERIFIER_PLAINTEXT = 'webterm-vault-verifier-v1'
 
@@ -60,6 +63,16 @@ function setSetting(db: Database, key: string, value: string): void {
   ).run(key, value)
 }
 
+/** 由主密码派生主密钥。setup 与 unlock 必须走同一份参数，否则解不开旧数据。 */
+function deriveKey(masterPassword: string, salt: Buffer): Buffer {
+  return scryptSync(masterPassword, salt, KDF_KEY_LEN, {
+    N: KDF_N,
+    r: KDF_R,
+    p: KDF_P,
+    maxmem: KDF_MAXMEM,
+  })
+}
+
 export class Vault {
   /** 派生出的主密钥；解锁前为 undefined，永不写盘 */
   private masterKey: Buffer | undefined
@@ -87,11 +100,7 @@ export class Vault {
     }
 
     const salt = randomBytes(KDF_SALT_BYTES)
-    const key = scryptSync(masterPassword, salt, KDF_KEY_LEN, {
-      N: KDF_N,
-      r: KDF_R,
-      p: KDF_P,
-    })
+    const key = deriveKey(masterPassword, salt)
 
     const verifier = this.encryptWith(key, Buffer.from(VERIFIER_PLAINTEXT, 'utf8'))
 
@@ -114,11 +123,7 @@ export class Vault {
     }
 
     const salt = Buffer.from(saltHex, 'hex')
-    const key = scryptSync(masterPassword, salt, KDF_KEY_LEN, {
-      N: KDF_N,
-      r: KDF_R,
-      p: KDF_P,
-    })
+    const key = deriveKey(masterPassword, salt)
 
     try {
       const plain = this.decryptWith(key, parseBox(Buffer.from(verifierB64, 'base64')))

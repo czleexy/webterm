@@ -37,6 +37,7 @@ export const vaultRoutes: FastifyPluginAsync = async (app) => {
     try {
       vault.setup(parsed.data.masterPassword)
     } catch (err) {
+      if (!(err instanceof VaultError)) request.log.error({ err }, '设置主密码时发生非预期错误')
       return handleVaultError(reply, err)
     }
     app.log.info('主密码已设置，保险库初始化完成')
@@ -51,6 +52,7 @@ export const vaultRoutes: FastifyPluginAsync = async (app) => {
     try {
       vault.unlock(parsed.data.masterPassword)
     } catch (err) {
+      if (!(err instanceof VaultError)) request.log.error({ err }, '解锁保险库时发生非预期错误')
       return handleVaultError(reply, err)
     }
     app.log.info('保险库已解锁')

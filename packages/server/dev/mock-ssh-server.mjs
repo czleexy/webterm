@@ -105,8 +105,10 @@ const server = new Server(
     client.on('ready', () => {
       console.log('[mock-ssh] 客户端认证通过')
 
-      // 跳板链支持：接受 direct-tcpip，把流量转发到目标地址
-      client.on('direct-tcpip', (accept, reject, info) => {
+      // 跳板链支持：接受 direct-tcpip，把流量转发到目标地址。
+      // 注意：ssh2 服务端 emit 的事件名是 'tcpip'（不是协议层的通道类型名 'direct-tcpip'），
+      // 且 info 为 { destIP, destPort, srcIP, srcPort }。注册错名字会导致握手期即被拒绝。
+      client.on('tcpip', (accept, reject, info) => {
         console.log(`[mock-ssh] direct-tcpip -> ${info.destIP}:${info.destPort}`)
         const net = require('node:net')
         const upstream = net.connect(info.destPort, info.destIP, () => {

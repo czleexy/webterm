@@ -12,6 +12,22 @@ import { DEFAULT_TERM_COLS, DEFAULT_TERM_ROWS } from '@webterm/shared'
 
 export type TabStatus = 'connecting' | 'ready' | 'flow-paused' | 'exited' | 'error'
 
+/**
+ * 状态点的颜色与文案。
+ * 定义在 store 侧而不是标签栏组件里：标签栏是通用组件，不认识任何 store，
+ * 由上层把 tone 拼进统一的标签视图（见 components/WorkspaceTabs.tsx）。
+ */
+export const TERMINAL_TAB_TONE: Record<
+  TabStatus,
+  { dot: string; text: string; pulse?: boolean }
+> = {
+  connecting: { dot: 'bg-neutral-400', text: '连接中', pulse: true },
+  ready: { dot: 'bg-emerald-500', text: '已连接' },
+  'flow-paused': { dot: 'bg-amber-500', text: '限速中（背压保护）' },
+  exited: { dot: 'bg-neutral-500', text: '已结束' },
+  error: { dot: 'bg-red-500', text: '出错' },
+}
+
 export interface TerminalTab {
   /** 客户端侧唯一 id，与页签一一对应 */
   id: string

@@ -1,30 +1,42 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { LibraryNode, SessionConfig } from '@webterm/shared'
 import { closeTerminal } from './api/client'
 import { AppHeader } from './components/AppHeader'
-import { SessionSidebar } from './components/SessionSidebar'
-import { TerminalTabs } from './components/TerminalTabs'
+import { SessionSidebar, type ConnectionItem } from './components/SessionSidebar'
+import { WorkspaceTabs, type WorkspaceTabItem } from './components/WorkspaceTabs'
 import { WelcomePane } from './components/WelcomePane'
-import { NewSessionDialog } from './components/NewSessionDialog'
+import { NewSessionDialog, type ConnectMode } from './components/NewSessionDialog'
 import { SessionDialog } from './components/SessionDialog'
 import { VaultGate } from './components/VaultGate'
 import { useHealth } from './hooks/useHealth'
-import { useTerminalStore, newTab, newTabFromSession } from './store/useTerminalStore'
+import { TERMINAL_TAB_TONE, useTerminalStore, newTab, newTabFromSession } from './store/useTerminalStore'
+import { SFTP_TAB_TONE, useSftpStore } from './store/useSftpStore'
 import { useVaultStore } from './store/useVaultStore'
 import { useLibraryStore } from './store/useLibraryStore'
 import { TerminalPane } from './terminal/TerminalPane'
+import { SftpWorkspace } from './sftp/SftpWorkspace'
 import { applyTheme, useThemeStore } from './theme/useTheme'
 import { createLibraryNode } from './api/client'
+
+/** 终端与 SFTP 共处一条标签栏，用前缀区分来源，避免 id 空间冲突 */
+const terminalKey = (id: string): string => `terminal:${id}`
+const sftpKey = (id: string): string => `sftp:${id}`
 
 export default function App() {
   const mode = useThemeStore((state) => state.mode)
   const health = useHealth()
 
   const tabs = useTerminalStore((state) => state.tabs)
-  const activeTabId = useTerminalStore((state) => state.activeTabId)
+  const activeTerminalId = useTerminalStore((state) => state.activeTabId)
   const addTab = useTerminalStore((state) => state.addTab)
   const removeAndFocusNext = useTerminalStore((state) => state.removeAndFocusNext)
-  const setActive = useTerminalStore((state) => state.setActive)
+  const setActiveTerminal = useTerminalStore((state) => state.setActive)
+
+  const sftpTabs = useSftpStore((state) => state.tabs)
+  const activeSftpId = useSftpStore((state) => state.activeTabId)
+  const openSftp = useSftpStore((state) => state.openSftp)
+  const removeSftpAndFocusNext = useSftpStore((state) => state.removeAndFocusNext)
+  const setActiveSftp = useSftpStore((state) => state.setActive)
 
   const vaultReady = useVaultStore((s) => s.ready)
   const vaultStatus = useVaultStore((s) => s.status)
@@ -34,10 +46,17 @@ export default function App() {
   const credentials = useLibraryStore((s) => s.credentials)
 
   const [quickOpen, setQuickOpen] = useState(false)
+  const [quickMode, setQuickMode] = useState<ConnectMode>('terminal')
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false)
   const [editingSession, setEditingSession] = useState<LibraryNode | null>(null)
   const [sessionParentId, setSessionParentId] = useState<string | null>(null)
   const [folderPrompt, setFolderPrompt] = useState<{ parentId: string | null; name: string } | null>(null)
+  /** 当前显示的是哪一类标签；两边的 activeId 各自维护，这里只决定渲染谁 */
+  const [activeKind, setActiveKind] = useState<'terminal' | 'sftp'>('terminal')
+
+  const activeKey = activeKind === 'sftp'
+    ? (activeSftpId ? sftpKey(activeSftpId) : null)
+    : (activeTerminalId ? terminalKey(activeTerminalId) : null)
 
   useEffect(() => {
     applyTheme(mode)
@@ -55,21 +74,166 @@ export default function App() {
     }
   }, [vaultReady, vaultUnlocked])
 
+  /** 统一的标签视图：终端在前、SFTP 在后 */
+  const tabItems = useMemo<WorkspaceTabItem[]>(() => {
+    const terminalItems: WorkspaceTabItem[] = tabs.map((tab) => {
+      const tone = TERMINAL_TAB_TONE[tab.status]
+      return {
+        id: terminalKey(tab.id),
+        title: tab.title,
+        kind: 'terminal',
+        dot: tone.dot,
+        label: tone.text,
+        pulse: tone.pulse,
+        notice: tab.notice,
+      }
+    })
+    const sftpItems: WorkspaceTabItem[] = sftpTabs.map((tab) => {
+      const tone = SFTP_TAB_TONE[tab.status]
+      return {
+        id: sftpKey(tab.id),
+        title: tab.title,
+        kind: 'sftp',
+        dot: tone.dot,
+        label: tone.text,
+        pulse: tone.pulse,
+        notice: tab.notice,
+      }
+    })
+    return [...terminalItems, ...sftpItems]
+  }, [sftpTabs, tabs])
+
+  const connections = useMemo<ConnectionItem[]>(
+    () =>
+      tabItems.map((item) => ({
+        key: item.id,
+        kind: item.kind,
+        title: item.title,
+        dot: item.dot,
+        statusText: item.notice ? `${item.label}：${item.notice}` : item.label,
+      })),
+    [tabItems],
+  )
+
+  /* ---------------- 打开新会话 ---------------- */
+
   const handleCreate = useCallback(
-    (config: SessionConfig, title: string) => {
-      addTab(newTab(config, title))
+    (config: SessionConfig, title: string, connectMode: ConnectMode) => {
       setQuickOpen(false)
+      if (connectMode === 'sftp') {
+        setActiveKind('sftp')
+        void openSftp(
+          { config: { target: config.target, legacyCompat: config.legacyCompat }, title },
+          title,
+        )
+        return
+      }
+      setActiveKind('terminal')
+      addTab(newTab(config, title))
     },
-    [addTab],
+    [addTab, openSftp],
   )
 
   const handleConnectSession = useCallback(
     (node: LibraryNode) => {
       if (!node.session) return
+      setActiveKind('terminal')
       addTab(newTabFromSession(node.id, node.name))
     },
     [addTab],
   )
+
+  /** 从会话库直接打开 SFTP（连接参数与凭据由服务端解析） */
+  const handleOpenSftpSession = useCallback(
+    (node: LibraryNode) => {
+      if (!node.session) return
+      setActiveKind('sftp')
+      void openSftp({ sessionId: node.id, title: `${node.name} · SFTP` }, '')
+    },
+    [openSftp],
+  )
+
+  /**
+   * 在已有终端上打开 SFTP。
+   *
+   * 优先把 terminalId 交给服务端复用同一条 SSH 连接 ——
+   * 老设备（交换机/路由器）的 VTY 线路常常只有几条，重复登录会直接把人挡在门外。
+   */
+  const handleOpenSftpForTerminal = useCallback(
+    (unifiedId: string) => {
+      const terminalTabId = unifiedId.slice('terminal:'.length)
+      const tab = tabs.find((t) => t.id === terminalTabId)
+      if (!tab) return
+      setActiveKind('sftp')
+
+      if (tab.terminalId) {
+        void openSftp({ terminalId: tab.terminalId, title: `${tab.title} · SFTP` }, '')
+        return
+      }
+      if (tab.config) {
+        void openSftp(
+          {
+            config: { target: tab.config.target, legacyCompat: tab.config.legacyCompat },
+            title: `${tab.title} · SFTP`,
+          },
+          '',
+        )
+        return
+      }
+      if (tab.sessionId) {
+        void openSftp({ sessionId: tab.sessionId, title: `${tab.title} · SFTP` }, '')
+      }
+    },
+    [openSftp, tabs],
+  )
+
+  /* ---------------- 关闭与选中 ---------------- */
+
+  /**
+   * 关闭标签。
+   * 终端必须显式调用 DELETE：仅关闭 WebSocket 只会让服务端进入「等待重连」状态，
+   * SSH 连接会保留数分钟，目标设备上的 VTY 线路也会一直被占用。
+   * SFTP 的会话回收在 removeAndFocusNext 里完成（同样要 DELETE）。
+   */
+  const handleClose = useCallback(
+    (unifiedId: string) => {
+      if (unifiedId.startsWith('sftp:')) {
+        removeSftpAndFocusNext(unifiedId.slice('sftp:'.length))
+        return
+      }
+      const id = unifiedId.slice('terminal:'.length)
+      const tab = tabs.find((t) => t.id === id)
+      if (tab?.terminalId) {
+        void closeTerminal(tab.terminalId).catch(() => {
+          // 终端可能已自行结束，清理失败无需打扰用户
+        })
+      }
+      removeAndFocusNext(id)
+    },
+    [removeAndFocusNext, removeSftpAndFocusNext, tabs],
+  )
+
+  const handleSelect = useCallback(
+    (unifiedId: string) => {
+      if (unifiedId.startsWith('sftp:')) {
+        setActiveKind('sftp')
+        setActiveSftp(unifiedId.slice('sftp:'.length))
+        return
+      }
+      setActiveKind('terminal')
+      setActiveTerminal(unifiedId.slice('terminal:'.length))
+    },
+    [setActiveSftp, setActiveTerminal],
+  )
+
+  // 当前类型的标签全部关掉后，自动切到另一类，避免停在空白页
+  useEffect(() => {
+    if (activeKind === 'terminal' && tabs.length === 0 && sftpTabs.length > 0) {
+      setActiveKind('sftp')
+    } else if (activeKind === 'sftp' && sftpTabs.length === 0 && tabs.length > 0) {
+      setActiveKind('terminal')
+    }
+  }, [activeKind, sftpTabs.length, tabs.length])
 
   const handleEditSession = useCallback((node: LibraryNode) => {
     setEditingSession(node)
@@ -116,23 +280,10 @@ export default function App() {
     void useVaultStore.getState().lock()
   }, [])
 
-  /**
-   * 关闭标签。
-   * 必须显式调用 DELETE：仅关闭 WebSocket 只会让服务端进入「等待重连」状态，
-   * SSH 连接会保留数分钟，目标设备上的 VTY 线路也会一直被占用。
-   */
-  const handleClose = useCallback(
-    (id: string) => {
-      const tab = tabs.find((t) => t.id === id)
-      if (tab?.terminalId) {
-        void closeTerminal(tab.terminalId).catch(() => {
-          // 终端可能已自行结束，清理失败无需打扰用户
-        })
-      }
-      removeAndFocusNext(id)
-    },
-    [removeAndFocusNext, tabs],
-  )
+  const openQuick = useCallback((m: ConnectMode) => {
+    setQuickMode(m)
+    setQuickOpen(true)
+  }, [])
 
   /** 全局快捷键：用 Alt 组合键，避免与浏览器自身的 Ctrl+T / Ctrl+W 冲突 */
   useEffect(() => {
@@ -142,26 +293,26 @@ export default function App() {
 
       if (key === 't') {
         e.preventDefault()
-        setQuickOpen(true)
+        openQuick('terminal')
         return
       }
       if (key === 'w') {
         e.preventDefault()
-        if (activeTabId) handleClose(activeTabId)
+        if (activeKey) handleClose(activeKey)
         return
       }
       if (key === 'arrowdown' || key === 'arrowup') {
-        if (tabs.length < 2) return
+        if (tabItems.length < 2) return
         e.preventDefault()
-        const index = tabs.findIndex((t) => t.id === activeTabId)
+        const index = tabItems.findIndex((t) => t.id === activeKey)
         const delta = key === 'arrowdown' ? 1 : -1
-        const next = tabs[(index + delta + tabs.length) % tabs.length]
-        if (next) setActive(next.id)
+        const next = tabItems[(index + delta + tabItems.length) % tabItems.length]
+        if (next) handleSelect(next.id)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeTabId, handleClose, setActive, tabs])
+  }, [activeKey, handleClose, handleSelect, openQuick, tabItems])
 
   // 保险库未就绪 / 未解锁时，整个应用被门禁挡住
   if (!vaultUnlocked) {
@@ -181,14 +332,15 @@ export default function App() {
 
       <div className="flex min-h-0 flex-1">
         <SessionSidebar
-          tabs={tabs}
-          activeTabId={activeTabId}
+          connections={connections}
+          activeKey={activeKey}
           nodes={nodes}
           vaultUnlocked={vaultUnlocked}
-          onSelect={setActive}
+          onSelect={handleSelect}
           onClose={handleClose}
-          onNew={() => setQuickOpen(true)}
+          onNew={() => openQuick('terminal')}
           onConnectSession={handleConnectSession}
+          onOpenSftp={handleOpenSftpSession}
           onEditSession={handleEditSession}
           onNewSessionIn={handleNewSessionIn}
           onNewFolderIn={handleNewFolderIn}
@@ -197,27 +349,41 @@ export default function App() {
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          {tabs.length > 0 ? (
-            <TerminalTabs
-              tabs={tabs}
-              activeTabId={activeTabId}
-              onSelect={setActive}
+          {tabItems.length > 0 ? (
+            <WorkspaceTabs
+              items={tabItems}
+              activeId={activeKey}
+              onSelect={handleSelect}
               onClose={handleClose}
-              onNew={() => setQuickOpen(true)}
+              onNew={() => openQuick('terminal')}
+              onOpenSftpFor={handleOpenSftpForTerminal}
             />
           ) : null}
 
           <div className="min-h-0 flex-1">
-            {tabs.length === 0 ? (
+            {tabItems.length === 0 ? (
               <div className="h-full overflow-auto">
-                <WelcomePane health={health} onNew={() => setQuickOpen(true)} />
+                <WelcomePane health={health} onNew={() => openQuick('terminal')} />
               </div>
             ) : (
-              // 所有终端同时挂载，非活动的用 CSS 隐藏：
+              // 所有面板同时挂载，非活动的用 CSS 隐藏：
               // 这样切换标签不会丢失滚动缓冲，也不会重建 WebSocket 连接
-              tabs.map((tab) => (
-                <TerminalPane key={tab.id} tab={tab} active={tab.id === activeTabId} />
-              ))
+              <>
+                {tabs.map((tab) => (
+                  <TerminalPane
+                    key={tab.id}
+                    tab={tab}
+                    active={activeKind === 'terminal' && tab.id === activeTerminalId}
+                  />
+                ))}
+                {sftpTabs.map((tab) => (
+                  <SftpWorkspace
+                    key={tab.id}
+                    tab={tab}
+                    active={activeKind === 'sftp' && tab.id === activeSftpId}
+                  />
+                ))}
+              </>
             )}
           </div>
         </main>
@@ -226,6 +392,7 @@ export default function App() {
       <NewSessionDialog
         open={quickOpen}
         onClose={() => setQuickOpen(false)}
+        initialMode={quickMode}
         onSubmit={handleCreate}
       />
 

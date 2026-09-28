@@ -12,6 +12,9 @@ export const API_PREFIX = '/api'
 /** 终端 WebSocket 端点前缀；实际路径为 /ws/terminal/:terminalId */
 export const WS_PATH = '/ws'
 
+/** SFTP WebSocket 端点：/ws/sftp/:sftpId */
+export const WS_SFTP_PATH = `${WS_PATH}/sftp`
+
 /** 服务端默认监听端口 */
 export const DEFAULT_SERVER_PORT = 8080
 
@@ -70,3 +73,25 @@ export type SupportedEncoding = (typeof SUPPORTED_ENCODINGS)[number]
 export const AUTH_METHODS = ['password', 'privateKey'] as const
 
 export type AuthMethodName = (typeof AUTH_METHODS)[number]
+
+/* ------------------------------------------------------------------ */
+/* 阶段 3：SFTP                                                         */
+/* ------------------------------------------------------------------ */
+
+/** 传输队列默认并发数（同目录同文件会被强制串行化，避免互相覆盖） */
+export const SFTP_DEFAULT_CONCURRENCY = 3
+
+/** 传输进度上报节流（毫秒）。太密会淹没 WebSocket，太疏则进度条卡顿 */
+export const SFTP_PROGRESS_INTERVAL_MS = 250
+
+/** 单次读写的块大小。SFTP 逐包确认，过大反而降低吞吐 */
+export const SFTP_CHUNK_BYTES = 128 * 1024
+
+/** 传输任务在终态保留的时长，之后从内存中清理 */
+export const SFTP_TRANSFER_RETENTION_MS = 30 * 60_000
+
+/** 速度滑动平均的采样窗口（样本数） */
+export const SFTP_SPEED_WINDOW = 8
+
+/** 状态码：SFTP 会话不存在 */
+export const SFTP_NOT_FOUND_CODE = 'SFTP_NOT_FOUND'

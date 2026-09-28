@@ -5,8 +5,24 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# 运行时数据（含加密凭据库、日志、私钥）
-data/
+# 运行时数据（含加密凭据库、日志、私钥、E2E 临时目录）
+#
+# 这里刻意不写 `data/`：无斜杠的模式会匹配任意层级的同名目录，连带把
+# packages/server/data（服务端默认数据目录，含真实保险库与 known_hosts）也忽略掉。
+# 而 git 的规则是「父目录被整体排除时，无法再放行其中的单个文件」，
+# 所以既要保留对子包的忽略，又要放行根目录下的验证脚本，只能按层级显式书写。
+/data/*
+!/data/tmp/
+/data/tmp/*
+# 例外：阶段 3 的端到端验证入口与定位探针随仓库分发 ——
+# docs/03-测试指南.md 里按路径引用了它们，且这些脚本只用内置 mock 与临时目录，不含任何凭据
+!/data/tmp/e2e-phase3.mjs
+!/data/tmp/e2e-browser-p3.mjs
+!/data/tmp/probe-p3-list.mjs
+!/data/tmp/probe-p3-server.mjs
+
+# 子包内的运行时数据目录（服务端默认数据目录等）
+packages/*/data/
 
 # 环境变量
 .env

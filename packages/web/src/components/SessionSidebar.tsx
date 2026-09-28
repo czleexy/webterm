@@ -1,38 +1,35 @@
 /**
- * 左侧栏：上半是「当前连接」（活动标签），下半是「会话库」树。
+ * 左侧栏：上半是「当前连接」（终端与 SFTP 共用一份列表），下半是「会话库」树。
  *
- * 会话库节点支持：连接、编辑（会话）、新建子文件夹、删除（文件夹递归）。
+ * 会话库节点支持：连接、打开 SFTP、编辑（会话）、新建子文件夹、删除（文件夹递归）。
+ *
+ * 组件刻意不直接依赖任何 store 类型：连接列表由上层压成 ConnectionItem 传入，
+ * 这样终端与 SFTP 两种会话能在同一个列表里共存，而不用在这里做类型分支。
  */
 import { useState } from 'react'
 import type { LibraryNode } from '@webterm/shared'
-import { type TabStatus, type TerminalTab } from '../store/useTerminalStore'
 import { cn } from '../utils/cn'
 
-const STATUS_DOT: Record<TabStatus, string> = {
-  connecting: 'bg-neutral-400 animate-pulse',
-  ready: 'bg-emerald-500',
-  'flow-paused': 'bg-amber-500',
-  exited: 'bg-neutral-500',
-  error: 'bg-red-500',
-}
-
-const STATUS_TEXT: Record<TabStatus, string> = {
-  connecting: '连接中',
-  ready: '已连接',
-  'flow-paused': '限速中',
-  exited: '已结束',
-  error: '出错',
+export interface ConnectionItem {
+  /** 全局唯一 key（'terminal:<id>' / 'sftp:<id>'） */
+  key: string
+  kind: 'terminal' | 'sftp'
+  title: string
+  dot: string
+  statusText: string
 }
 
 interface SessionSidebarProps {
-  tabs: TerminalTab[]
-  activeTabId: string | null
+  connections: ConnectionItem[]
+  activeKey: string | null
   nodes: LibraryNode[]
   vaultUnlocked: boolean
-  onSelect: (id: string) => void
-  onClose: (id: string) => void
+  onSelect: (key: string) => void
+  onClose: (key: string) => void
   onNew: () => void
   onConnectSession: (node: LibraryNode) => void
+  /** 为会话库中的配置打开一个 SFTP 文件传输标签 */
+  onOpenSftp: (node: LibraryNode) => void
   onEditSession: (node: LibraryNode) => void
   onNewSessionIn: (parentId: string | null) => void
   onNewFolderIn: (parentId: string | null) => void
@@ -41,14 +38,15 @@ interface SessionSidebarProps {
 }
 
 export function SessionSidebar({
-  tabs,
-  activeTabId,
+  connections,
+  activeKey,
   nodes,
   vaultUnlocked,
   onSelect,
   onClose,
   onNew,
   onConnectSession,
+  onOpenSftp,
   onEditSession,
   onNewSessionIn,
   onNewFolderIn,
@@ -143,14 +141,24 @@ export function SessionSidebar({
                 </button>
               </>
             ) : (
-              <button
-                type="button"
-                title="编辑会话"
-                onClick={() => onEditSession(node)}
-                className="text-[10px] text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-              >
-                编辑
-              </button>
+              <>
+                <button
+                  type="button"
+                  title="打开 SFTP 文件传输"
+                  onClick={() => onOpenSftp(node)}
+                  className="text-[10px] text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                >
+                  SFTP
+                </button>
+                <button
+                  type="button"
+                  title="编辑会话"
+                  onClick={() => onEditSession(node)}
+                  className="text-[10px] text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                >
+                  编辑
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -176,8 +184,8 @@ export function SessionSidebar({
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-neutral-200 px-3 dark:border-neutral-800">
         <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
           连接
-          {tabs.length > 0 ? (
-            <span className="ml-1 text-neutral-400 dark:text-neutral-500">({tabs.length})</span>
+          {connections.length > 0 ? (
+            <span className="ml-1 text-neutral-400 dark:text-neutral-500">({connections.length})</span>
           ) : null}
         </span>
         <button
@@ -190,21 +198,21 @@ export function SessionSidebar({
       </div>
 
       <ul className="max-h-[38%] shrink-0 overflow-y-auto p-1.5">
-        {tabs.length === 0 ? (
+        {connections.length === 0 ? (
           <li className="px-2 py-1.5 text-[10px] text-neutral-400 dark:text-neutral-500">暂无连接</li>
         ) : (
-          tabs.map((tab) => {
-            const active = tab.id === activeTabId
+          connections.map((item) => {
+            const active = item.key === activeKey
             return (
-              <li key={tab.id}>
+              <li key={item.key}>
                 <div
                   role="button"
                   tabIndex={0}
-                  onClick={() => onSelect(tab.id)}
+                  onClick={() => onSelect(item.key)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault()
-                      onSelect(tab.id)
+                      onSelect(item.key)
                     }
                   }}
                   className={cn(
@@ -214,16 +222,24 @@ export function SessionSidebar({
                       : 'hover:bg-neutral-100 dark:hover:bg-neutral-800/60',
                   )}
                 >
-                  <span className={cn('size-1.5 shrink-0 rounded-full', STATUS_DOT[tab.status])} title={STATUS_TEXT[tab.status]} />
+                  <span className={cn('size-1.5 shrink-0 rounded-full', item.dot)} title={item.statusText} />
+                  {item.kind === 'sftp' ? (
+                    <svg viewBox="0 0 24 24" className="size-3 shrink-0 text-amber-500" aria-hidden="true">
+                      <path
+                        d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l1.8 2.2h9.2A1.5 1.5 0 0 1 21 9.7v7.8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  ) : null}
                   <span className="min-w-0 flex-1 truncate text-xs text-neutral-700 dark:text-neutral-300">
-                    {tab.title}
+                    {item.title}
                   </span>
                   <button
                     type="button"
-                    aria-label={`关闭 ${tab.title}`}
+                    aria-label={`关闭 ${item.title}`}
                     onClick={(e) => {
                       e.stopPropagation()
-                      onClose(tab.id)
+                      onClose(item.key)
                     }}
                     className="flex size-4 shrink-0 items-center justify-center rounded text-neutral-400 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-100"
                   >

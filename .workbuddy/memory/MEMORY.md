@@ -29,8 +29,9 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 ## 状态与进度（2026-09-28）
 
 - 已完成：阶段 0（骨架）、阶段 1（终端主干）、阶段 2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）
-- **阶段 2 端到端 36/36 通过**（`data/tmp/e2e-phase2.mjs`，自管 4 个 mock + 服务端两次启停）
-- 最新提交：`0a5b482` —— 修掉两个阻断性 bug：保险库 scrypt `maxmem` 超限（致 `/api/vault/setup` 恒 500）、mock 跳板事件名写成 `direct-tcpip`
+- **阶段 2 后端端到端 36/36 通过**（`data/tmp/e2e-phase2.mjs`，自管 4 个 mock + 服务端两次启停）
+- **阶段 2 浏览器端到端 18/18 + 9/9 通过**（`data/tmp/e2e-browser-p2.mjs`，`PHASE=setup` / `PHASE=unlock`）
+- 最新提交：`5ff0375` —— 修掉「首屏卡在正在连接服务…」（全项目从未调用 `useVaultStore.refresh()`）
 - 下一步：阶段 3 SFTP 文件传输
 
 ## 项目约定
@@ -78,5 +79,16 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 
 - 环境里**没有 Playwright/agent-browser**，但有系统 Chrome：`C:/Program Files/Google/Chrome/Application/chrome.exe`
 - 用 `puppeteer-core`（装在 `C:/Users/Administrator/.workbuddy/binaries/node/workspace`，运行时 `NODE_PATH` 指向其 node_modules）+ `executablePath` 直连系统 Chrome，无需下载浏览器
+- **测试要用独立实例，别污染开发用的 8080**：`NODE_ENV=production WEBTERM_PORT=8097 node packages/server/dist/index.js`
+  会同时托管前端构建产物（需先 `npm run build`），一个端口就是完整应用
 - 读 xterm 终端内容：`document.querySelector('.xterm-rows')` 的子 div 逐行取 `textContent`
-- 给 xterm 键入：先 `page.click('.xterm-helper-textarea')` 聚焦，再 `page.keyboard.type(...)`
+- **给 xterm 键入**：`page.click('.xterm-helper-textarea')` 会报 *not clickable*（它是透明浮层），
+  要用 `page.evaluate(() => document.querySelector('.xterm-helper-textarea')?.focus())` 再 `page.keyboard.type(...)`
+- **给 React 受控组件填值**必须走原生 setter + `input` 事件，直接改 `value` 不会被 React 感知：
+  ```js
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, v)
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+  ```
+- 统计「无前端错误」时要排除预期业务响应（401/403/423），否则错误密码等用例会误报
+- 断言前先确认 UI 真的会那样表现：**刷新浏览器不会要求解锁**（解锁态在服务端进程内存里），
+  只有重启服务端才会；**凭据不在侧边栏展示**，只在会话对话框的凭据下拉里

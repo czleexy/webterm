@@ -143,6 +143,23 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
   }
 
   /**
+   * 供 SFTP 会话在同一连接上另开通道使用。
+   * 返回 undefined 表示会话尚未就绪或已结束。
+   *
+   * 注意这里泄露的是底层 Client：SFTP 会话**不得**关闭它 ——
+   * 连接的所有权始终属于终端会话（见 sftp-session.ts 的 ownsConnection）。
+   */
+  get sshClient(): Client | undefined {
+    if (this.state === 'closed') return undefined
+    return this.conn?.client
+  }
+
+  /** 会话是否仍可承载新通道 */
+  get alive(): boolean {
+    return this.state !== 'closed'
+  }
+
+  /**
    * 建立 SSH 连接并打开 PTY shell。
    * 任何失败都会抛出 SshError，由 REST 层转成 HTTP 错误。
    */

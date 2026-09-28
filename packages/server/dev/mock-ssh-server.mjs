@@ -19,17 +19,32 @@
  *   MOCK_PASS    口令，默认 demo
  *   MOCK_LEGACY  设为 1 时只提供 legacy 算法，用于验证客户端的自动降级逻辑
  *   MOCK_AUTH    password（默认）| publickey，验证密钥认证链路
+ *   MOCK_SFTP_ROOT  SFTP 子系统的根目录（默认 data/tmp/mock-sftp-root）
+ *   MOCK_NO_SFTP  设为 1 时拒绝 sftp 子系统，用于验证客户端对「不支持 SFTP」的提示
  *
  * 跳板链支持：本服务端接受 direct-tcpip 通道请求（即 ssh -L/-W 的服务端行为），
  * 因此把多个实例串联即可验证 ProxyJump：A(2222) → B(2223) → C(2224)。
  * 公钥认证模式下公钥经 stdin 传入（一行 base64），避免密钥落盘。
  *
+ * SFTP 子系统：见 mock-sftp.mjs —— 真机测试主机拒绝 shell/exec/subsystem，
+ * 文件传输链路只能靠这里的自实现后端来验证。
+ *
  * 仅用于本地开发与测试，切勿部署到生产环境。
  */
 import { createRequire } from 'node:module'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { attachSftpServer } from './mock-sftp.mjs'
 
 const require = createRequire(import.meta.url)
 const { Server, utils } = require('ssh2')
+
+const _here = path.dirname(fileURLToPath(import.meta.url))
+const SFTP_ROOT = path.resolve(
+  process.env.MOCK_SFTP_ROOT || path.join(_here, '../../data/tmp/mock-sftp-root'),
+)
+const SFTP_ENABLED = process.env.MOCK_NO_SFTP !== '1'
 
 const PORT = Number(process.env.MOCK_PORT || 2222)
 const HOST = process.env.MOCK_HOST || '127.0.0.1'
@@ -170,6 +185,25 @@ const server = new Server(
           stream.write(`exec 命令执行结果：${info.command}\r\n`)
           stream.exit(0)
           stream.end()
+        })
+
+        // SFTP 子系统：把请求落到 SFTP_ROOT 下的临时目录
+        session.on('sftp', (acceptSftp, rejectSftp) => {
+          if (!authed || !SFTP_ENABLED) {
+            console.log('[mock-ssh] 拒绝 sftp 子系统请求')
+            try {
+              rejectSftp?.()
+            } catch {
+              /* 忽略 */
+            }
+            return
+          }
+          fs.mkdirSync(SFTP_ROOT, { recursive: true })
+          console.log(`[mock-ssh] sftp 子系统已开启，根目录 ${SFTP_ROOT}`)
+          const sftp = acceptSftp()
+          attachSftpServer(sftp, SFTP_ROOT, (line) => {
+            if (process.env.MOCK_DEBUG) console.log(line)
+          })
         })
       })
     })
@@ -385,4 +419,7 @@ function handleCommand(stream, cmd, pty, requestQuit) {  const [name, ...rest] =
 server.listen(PORT, HOST, () => {
   console.log(`[mock-ssh] 已监听 ${HOST}:${PORT}`)
   console.log(`[mock-ssh] 用户名 ${USER} / 口令 ${PASS}`)
+  console.log(
+    `[mock-ssh] SFTP 子系统：${SFTP_ENABLED ? `已启用（根目录 ${SFTP_ROOT}）` : '已禁用（MOCK_NO_SFTP=1）'}`,
+  )
 })

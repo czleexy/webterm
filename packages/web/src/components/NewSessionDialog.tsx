@@ -37,10 +37,15 @@ const LEGACY_LABEL: Record<LegacyCompat, string> = {
   never: '仅现代算法（更安全）',
 }
 
+/** 连接用途：终端会话，或直接开一个 SFTP 文件传输标签 */
+export type ConnectMode = 'terminal' | 'sftp'
+
 export interface NewSessionDialogProps {
   open: boolean
   onClose: () => void
-  onSubmit: (config: SessionConfig, title: string) => void
+  /** 初始模式；从「打开 SFTP」入口进来时直接进 sftp */
+  initialMode?: ConnectMode
+  onSubmit: (config: SessionConfig, title: string, mode: ConnectMode) => void
 }
 
 interface FormState {
@@ -88,8 +93,9 @@ function toTarget(form: FormState): SshTarget {
   return base
 }
 
-export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogProps) {
+export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSessionDialogProps) {
   const [form, setForm] = useState<FormState>(INITIAL_FORM)
+  const [mode, setMode] = useState<ConnectMode>(initialMode ?? 'terminal')
   const [testing, setTesting] = useState(false)
   const [probe, setProbe] = useState<ProbeSessionResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -99,13 +105,14 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   useEffect(() => {
     if (open) {
       setForm(INITIAL_FORM)
+      setMode(initialMode ?? 'terminal')
       setProbe(null)
       setError(null)
       setTesting(false)
       // 等弹窗渲染完成再聚焦
       requestAnimationFrame(() => hostInputRef.current?.focus())
     }
-  }, [open])
+  }, [open, initialMode])
 
   useEffect(() => {
     if (!open) return
@@ -181,8 +188,8 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
       setError(validationError)
       return
     }
-    onSubmit(buildConfig(), form.title.trim())
-  }, [buildConfig, form.title, onSubmit, validationError])
+    onSubmit(buildConfig(), form.title.trim(), mode)
+  }, [buildConfig, form.title, mode, onSubmit, validationError])
 
   if (!open) return null
 
@@ -196,23 +203,49 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
       >
         <div className="flex items-center justify-between border-b border-neutral-200 px-5 py-3 dark:border-neutral-800">
           <h2 className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-            新建 SSH 连接
+            {mode === 'sftp' ? '新建 SFTP 文件传输' : '新建 SSH 连接'}
           </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="关闭"
-            className="flex size-6 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
-          >
-            <svg viewBox="0 0 24 24" className="size-3.5" aria-hidden="true">
-              <path
-                d="M6 6l12 12M18 6L6 18"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
+          <div className="flex items-center gap-3">
+            {/* 用途切换：同一条 SSH 连接既能开终端也能开文件传输 */}
+            <div className="flex rounded-md border border-neutral-200 p-0.5 dark:border-neutral-700">
+              {(
+                [
+                  ['terminal', '终端'],
+                  ['sftp', 'SFTP 文件'],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  data-testid={`mode-${value}`}
+                  onClick={() => setMode(value)}
+                  className={cn(
+                    'rounded px-2 py-0.5 text-[11px] transition-colors',
+                    mode === value
+                      ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                      : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="关闭"
+              className="flex size-6 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+            >
+              <svg viewBox="0 0 24 24" className="size-3.5" aria-hidden="true">
+                <path
+                  d="M6 6l12 12M18 6L6 18"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div className="max-h-[64vh] overflow-y-auto px-5 py-4">
@@ -335,35 +368,37 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
             )}
           </Section>
 
-          {/* 终端与兼容性 */}
-          <Section title="终端与兼容性">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="终端编码">
-                <select
-                  name="encoding"
-                  value={form.encoding}
-                  onChange={(e) => patch({ encoding: e.target.value as SupportedEncoding })}
-                  className={inputClass}
-                >
-                  {SUPPORTED_ENCODINGS.map((enc) => (
-                    <option key={enc} value={enc}>
-                      {ENCODING_LABEL[enc]}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="TERM 类型">
-                <input
-                  name="term"
-                  value={form.term}
-                  onChange={(e) => patch({ term: e.target.value })}
-                  spellCheck={false}
-                  className={inputClass}
-                />
-              </Field>
-            </div>
+          {/* 终端与兼容性：SFTP 模式不需要终端编码与 TERM */}
+          <Section title={mode === 'sftp' ? '连接兼容性' : '终端与兼容性'}>
+            {mode === 'terminal' ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field label="终端编码">
+                  <select
+                    name="encoding"
+                    value={form.encoding}
+                    onChange={(e) => patch({ encoding: e.target.value as SupportedEncoding })}
+                    className={inputClass}
+                  >
+                    {SUPPORTED_ENCODINGS.map((enc) => (
+                      <option key={enc} value={enc}>
+                        {ENCODING_LABEL[enc]}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="TERM 类型">
+                  <input
+                    name="term"
+                    value={form.term}
+                    onChange={(e) => patch({ term: e.target.value })}
+                    spellCheck={false}
+                    className={inputClass}
+                  />
+                </Field>
+              </div>
+            ) : null}
 
-            <div className="mt-3">
+            <div className={cn(mode === 'terminal' && 'mt-3')}>
               <Field label="算法兼容策略">
                 <select
                   name="legacyCompat"
@@ -424,7 +459,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
             onClick={handleSubmit}
             className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white"
           >
-            连接
+            {mode === 'sftp' ? '打开文件传输' : '连接'}
           </button>
         </div>
       </div>

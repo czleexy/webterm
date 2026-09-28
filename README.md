@@ -4,7 +4,8 @@
 
 服务跑在本机负责 SSH 协议栈与连接管理，浏览器只负责渲染与交互。免安装、跨平台，配置与会话集中在一处管理。
 
-> 当前进度：**阶段 2（会话管理与持久化）已交付** —— 会话库（分组 / 树）、主密码保险库（AES-256-GCM 加密凭据）、密钥登录、跳板机 ProxyJump。
+> 当前进度：**阶段 3（SFTP 文件传输）已交付** —— 本地 / 远端双栏浏览、传输队列（并发 / 断点续传 / 暂停取消）、拖拽互传、浏览器上传下载、文本预览与远程编辑（带 mtime 冲突检测）。
+> 前一阶段：阶段 2（会话管理与持久化）—— 会话库（分组 / 树）、主密码保险库（AES-256-GCM 加密凭据）、密钥登录、跳板机 ProxyJump。
 > 详细设计见 [`docs/01-功能框架与需求说明书.md`](docs/01-功能框架与需求说明书.md) 与 [`docs/02-实现计划.md`](docs/02-实现计划.md)。
 > 界面截图见 [`docs/screenshots/`](docs/screenshots/)。
 
@@ -54,6 +55,21 @@ npm run dev
 | 断线重连 | 网络抖动自动重连（3 次退避），令牌失效则明确提示 |
 
 **快捷键**：`Alt+T` 新建连接 · `Alt+W` 关闭标签 · `Alt+↑/↓` 切换标签
+
+---
+
+## 阶段 3 已交付能力（SFTP）
+
+| 能力 | 说明 |
+| --- | --- |
+| 双栏文件管理 | 左「本机（服务端磁盘）」/ 右「远端主机」；双击进出目录、地址栏可手输、表头排序（目录恒定置顶）、Ctrl / Shift 多选 |
+| 复用终端连接 | 可从标签栏的终端标签直接开 SFTP，在同一条 SSH 连接上开文件通道 —— 老设备的 VTY 线路只有几条，重复登录会把后来的会话挡在门外 |
+| 拖拽互传 | 一侧选中拖到另一侧即传输；同侧拖拽 = 移动（用 `rename` 实现，两端都支持且原子）；从操作系统拖文件进远端栏 = 浏览器上传 |
+| 传输队列 | 并发上限可配（默认 3）、同目标串行、滑动平均速度与 ETA、目录聚合进度；暂停 / 继续 / 取消 / 重试；断点续传 |
+| 覆盖保护 | 默认不覆盖，目标已存在时任务失败并列出冲突路径，确认后才覆盖 |
+| 浏览器通道 | 大文件走 `application/octet-stream` 原始流（XHR 上报进度），下载支持 HTTP Range |
+| 文本预览与远程编辑 | 编辑后直接回写远端，并沿用原权限；保存带打开时的 `mtime`，被他人改过则 409 拒绝而不是静默覆盖；二进制文件只读并说明原因 |
+| 路径安全 | 本地侧词法 + `realpath` 双重校验，`../..`、绝对路径越界、符号链接越界一律 403 |
 
 ---
 
@@ -176,6 +192,28 @@ webterm/
 
 需要解锁的接口在锁定态返回 **423 Locked** + `error: "LOCKED"`。
 
+### SFTP 文件传输（阶段 3）
+
+双栏的两侧都在**服务端所在机器**上：`local` 是服务端受限的本地根目录（默认用户家目录，有防 `..` 逃逸与符号链接越界的校验），`remote` 是 SSH 目标主机的文件系统。之所以不做「浏览器本地磁盘」这一侧，是因为浏览器的安全模型不允许随意读写本地路径；而 WebTerm 的典型部署就是服务跑在自己机器上、用浏览器访问 localhost，此时服务端磁盘就是用户的磁盘。需要真正跨机器搬运时，另有浏览器上传 / 下载通道。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/sftp/sessions` | 列出当前活跃的 SFTP 会话 |
+| `POST /api/sftp/sessions` | 建会话，请求体三选一：`{ sessionId }` / `{ config: { target, legacyCompat? } }` / `{ terminalId }`。**`terminalId` 会在该终端已有的 SSH 连接上开 SFTP 通道**，避免对同一台设备重复登录（老设备的 VTY 线路常常只有几条） |
+| `DELETE /api/sftp/sessions/:id` | 关闭会话并释放连接 |
+| `GET /api/sftp/sessions/:id/list?side=&path=` | 列目录，返回条目（含 `mode` / `modeText` / 类型 / 软链接指向）以及 `parent`、`root` / `home` |
+| `POST /api/sftp/sessions/:id/{mkdir,rename,chmod,touch,remove}` | 文件操作；`remove` 支持批量路径 |
+| `POST /api/sftp/sessions/:id/preview` | 文本预览：返回内容、`mtime`、`kind`（text/binary）、`truncated`、`editable` |
+| `POST /api/sftp/sessions/:id/save` | 回写远端文件；带上打开预览时的 `expectedMtime`，不一致返回 **409 CONFLICT** 而非静默覆盖 |
+| `GET/POST /api/sftp/sessions/:id/transfers` | 列出 / 创建传输任务（`direction` 以远端为参照：`upload` = 本地 → 远端） |
+| `POST /api/sftp/sessions/:id/transfers/:taskId/:action` | `pause` / `resume` / `cancel` / `retry` |
+| `DELETE /api/sftp/sessions/:id/transfers/:taskId` | 从列表移除已结束任务 |
+| `POST /api/sftp/sessions/:id/upload?path=&offset=` | 请求体为 `application/octet-stream` 原始流；`offset` 支持续写 |
+| `GET /api/sftp/sessions/:id/download?path=` | 支持 HTTP Range（206 + `Content-Range`） |
+| `GET /api/sftp/sessions/:id/local/download?path=` | 下载服务端本地面板的文件 |
+
+`WS /ws/sftp/:sftpId?token=<attachToken>` 只推送传输队列的状态：附加时先下发一次全量快照（`transfers`），再推增量（`transfer` / `removed`），这样断线重连后不会因为漏掉几条增量而让界面进度永久停在错误位置。目录列举与文件操作全部走 REST。
+
 ### `WS /ws/terminal/:terminalId?token=<attachToken>`
 
 **二进制帧** = 终端原始字节流（输入 / 输出）；**文本帧** = JSON 控制消息（`ready` / `resize` / `exit` / `error` / `flow` / `ack`）。协议定义见 `packages/shared/src/ws.ts`。
@@ -201,8 +239,19 @@ node packages/server/dev/mock-ssh-server.mjs
 MOCK_LEGACY=1 MOCK_PORT=2223 node packages/server/dev/mock-ssh-server.mjs
 ```
 
-**验证跳板链**：本服务端接受 `direct-tcpip`（即充当跳板机），把多个实例串起来即可：
+**验证 SFTP**：服务端自带 SFTP 子系统，`/home/demo` 映射到 `MOCK_SFTP_ROOT`：
 
+```bash
+MOCK_PORT=2231 MOCK_SFTP_ROOT='D:/tmp/mock-2231' node packages/server/dev/mock-ssh-server.mjs
+```
+
+| 变量 | 用途 |
+| --- | --- |
+| `MOCK_SFTP_ROOT` | SFTP 家目录对应的宿主目录 |
+| `MOCK_NO_SFTP=1` | 不提供 SFTP 子系统，验证「远端不支持 SFTP」的提示 |
+| `MOCK_SFTP_FAIL_ONCE_AFTER=<字节>` | 累计写入超过该字节后拒绝一次 WRITE，用于验证断点续传 |
+
+**验证跳板链**：本服务端接受 `direct-tcpip`（即充当跳板机），把多个实例串起来即可：
 ```bash
 MOCK_PORT=2222 node packages/server/dev/mock-ssh-server.mjs   # 跳板 A
 MOCK_PORT=2223 node packages/server/dev/mock-ssh-server.mjs   # 跳板 B
@@ -235,5 +284,5 @@ printf '<公钥的 base64 blob>\n' | MOCK_AUTH=publickey MOCK_PORT=2225 node pac
 | 0 工程骨架 | ✅ 已完成 |
 | 1 终端主干打通 | ✅ 已完成 |
 | 2 会话管理与持久化 | ✅ 已完成 |
-| 3 SFTP 文件传输 | ⏳ 下一步 |
+| 3 SFTP 文件传输 | ✅ 已完成 |
 | 4–8 | 待开发 |

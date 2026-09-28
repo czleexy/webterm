@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import Fastify, { type FastifyInstance } from 'fastify'
 import fastifyStatic from '@fastify/static'
 import fastifyWebsocket from '@fastify/websocket'
-import { API_PREFIX, APP_NAME, APP_VERSION, WS_PATH } from '@webterm/shared'
+import { API_PREFIX, APP_NAME, APP_VERSION, WS_PATH, WS_SFTP_PATH } from '@webterm/shared'
 import type { AppConfig } from './config/index.js'
 import { healthRoutes } from './api/rest/health.js'
 import { sessionRoutes } from './api/rest/sessions.js'
@@ -13,7 +13,9 @@ import { capabilityRoutes } from './api/rest/capabilities.js'
 import { vaultRoutes } from './api/rest/vault.js'
 import { credentialRoutes } from './api/rest/credentials.js'
 import { libraryRoutes } from './api/rest/library.js'
+import { sftpRoutes } from './api/rest/sftp.js'
 import { terminalWsRoutes } from './api/ws/terminal.js'
+import { sftpWsRoutes } from './api/ws/sftp.js'
 import { KnownHostsStore } from './ssh/known-hosts.js'
 import { TerminalManager } from './terminal/terminal-manager.js'
 import { Vault } from './security/vault.js'
@@ -21,6 +23,7 @@ import { CredentialStore } from './security/credential-store.js'
 import { LibraryStore } from './db/library.js'
 import { openDatabase } from './db/index.js'
 import { SessionResolver } from './api/resolver.js'
+import { SftpManager } from './sftp/sftp-manager.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -34,12 +37,14 @@ declare module 'fastify' {
     credentials: CredentialStore
     library: LibraryStore
     sessionResolver: SessionResolver
+    sftp: SftpManager
   }
 }
 
 export interface BuiltApp {
   app: FastifyInstance
   terminals: TerminalManager
+  sftp: SftpManager
 }
 
 /**
@@ -76,15 +81,25 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   const library = new LibraryStore(db, credentials)
   const sessionResolver = new SessionResolver(credentials)
 
+  // 阶段 3：SFTP 文件传输。文件面板的「本地」侧被限制在 config.localRoot 之内
+  const sftp = new SftpManager({
+    knownHosts,
+    logger: app.log,
+    localRoot: config.localRoot,
+    concurrency: config.sftpConcurrency,
+  })
+
   app.decorate('knownHosts', knownHosts)
   app.decorate('terminals', terminals)
   app.decorate('vault', vault)
   app.decorate('credentials', credentials)
   app.decorate('library', library)
   app.decorate('sessionResolver', sessionResolver)
+  app.decorate('sftp', sftp)
   // 进程退出时统一关闭所有 SSH 连接，避免留下悬挂会话占用远端 VTY；
   // 保险库清零内存密钥，数据库正常关闭（WAL checkpoint）
   app.addHook('onClose', async () => {
+    sftp.dispose()
     terminals.dispose()
     vault.lock()
     db.close()
@@ -105,7 +120,9 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   await app.register(libraryRoutes, { prefix: API_PREFIX })
   await app.register(sessionRoutes, { prefix: API_PREFIX })
   await app.register(terminalRoutes, { prefix: API_PREFIX })
+  await app.register(sftpRoutes, { prefix: API_PREFIX })
   await app.register(terminalWsRoutes, { prefix: WS_PATH })
+  await app.register(sftpWsRoutes, { prefix: WS_SFTP_PATH })
 
   // dist 相对本文件定位：src/app.ts -> ../../web/dist，dist/app.js -> ../../web/dist
   const webDist = path.resolve(here, '../../web/dist')
@@ -148,10 +165,11 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
         `${APP_NAME} ${APP_VERSION} 服务运行中\n` +
           `API 前缀：${API_PREFIX}\n` +
           `终端端点：${WS_PATH}/terminal/:terminalId\n` +
+          `文件传输端点：${WS_SFTP_PATH}/:sftpId\n` +
           `前端地址：${config.isDev ? `http://localhost:5173（Vite 开发服务器）` : '未构建，请执行 npm run build'}\n`,
       )
     })
   }
 
-  return { app, terminals }
+  return { app, terminals, sftp }
 }

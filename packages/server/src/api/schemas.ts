@@ -187,3 +187,93 @@ export const UpdateLibraryNodeRequestSchema = z.object({
 
 export type SshTargetInput = z.infer<typeof SshTargetSchema>
 export type SessionConfigInput = z.infer<typeof SessionConfigSchema>
+
+/* ------------------------------------------------------------------ */
+/* 阶段 3：SFTP                                                        */
+/* ------------------------------------------------------------------ */
+
+export const SftpSideSchema = z.enum(['local', 'remote'])
+
+/**
+ * 路径校验只做最基本的把关（非空、无 NUL、长度合理）。
+ * 真正的越界/存在性判断必须在服务端按「实际解析结果」做 ——
+ * 靠正则拦 `..` 是拦不住的（`a/../../b`、符号链接、Windows 的 `\\?\` 前缀都能绕过）。
+ */
+const SftpPathSchema = z
+  .string()
+  .min(1, '路径不能为空')
+  .max(4096, '路径过长')
+  .refine((v) => !v.includes('\0'), '路径包含非法字符')
+
+export const CreateSftpSessionRequestSchema = z.object({
+  sessionId: z.string().trim().min(1).optional(),
+  config: z
+    .object({
+      target: SshTargetSchema,
+      legacyCompat: LegacyCompatSchema.default('auto'),
+    })
+    .optional(),
+  terminalId: z.string().trim().min(1).optional(),
+  title: z.string().trim().max(80, '标题过长').optional(),
+})
+
+export const SftpListQuerySchema = z.object({
+  side: SftpSideSchema.default('remote'),
+  path: SftpPathSchema.optional(),
+})
+
+export const SftpMkdirRequestSchema = z.object({
+  side: SftpSideSchema,
+  path: SftpPathSchema,
+  name: z.string().trim().min(1).max(255).optional(),
+})
+
+export const SftpRenameRequestSchema = z.object({
+  side: SftpSideSchema,
+  from: SftpPathSchema,
+  to: SftpPathSchema,
+})
+
+export const SftpChmodRequestSchema = z.object({
+  side: SftpSideSchema,
+  path: SftpPathSchema,
+  mode: z
+    .string()
+    .trim()
+    .regex(/^(0o)?[0-7]{3,4}$/i, '权限应为 3~4 位八进制数字，如 644'),
+})
+
+export const SftpRemoveRequestSchema = z.object({
+  side: SftpSideSchema,
+  paths: z.array(SftpPathSchema).min(1, '至少选择一个路径').max(200, '单次最多删除 200 项'),
+})
+
+export const SftpTouchRequestSchema = z.object({
+  side: SftpSideSchema,
+  path: SftpPathSchema,
+})
+
+export const SftpPreviewRequestSchema = z.object({
+  path: SftpPathSchema,
+  /** 上限压到 2MB，避免把整个大文件读进内存 */
+  maxBytes: z.coerce.number().int().min(1).max(2 * 1024 * 1024).optional(),
+})
+
+export const SftpSaveRequestSchema = z.object({
+  path: SftpPathSchema,
+  content: z.string().max(4 * 1024 * 1024, '内容过大，请改用上传'),
+  expectedMtime: z.coerce.number().int().nonnegative().optional(),
+  mode: z.coerce.number().int().min(0).max(0o7777).optional(),
+})
+
+export const CreateTransferRequestSchema = z.object({
+  direction: z.enum(['upload', 'download']),
+  sources: z.array(SftpPathSchema).min(1, '至少选择一个源').max(200, '单次最多 200 项'),
+  targetDir: SftpPathSchema,
+  overwrite: z.boolean().default(false),
+  recursive: z.boolean().default(true),
+  preserveMode: z.boolean().default(true),
+})
+
+export const TransferActionSchema = z.enum(['pause', 'resume', 'cancel', 'retry'])
+

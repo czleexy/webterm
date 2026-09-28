@@ -1,5 +1,6 @@
 import path from 'node:path'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { z } from 'zod'
 import { DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT } from '@webterm/shared'
 
@@ -22,6 +23,14 @@ const EnvSchema = z.object({
   WEBTERM_ALLOW_ORIGINS: z
     .string()
     .default('http://localhost:5173,http://127.0.0.1:5173'),
+  /**
+   * 文件面板中「本地」一侧允许访问的根目录。
+   * 缺省为用户家目录：既能满足绝大多数上传下载需求，又不会让浏览器端
+   * 意外获得整机文件系统的访问能力。
+   */
+  WEBTERM_LOCAL_ROOT: z.string().min(1).optional(),
+  /** SFTP 传输并发上限 */
+  WEBTERM_SFTP_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(3),
 })
 
 export interface AppConfig {
@@ -37,6 +46,10 @@ export interface AppConfig {
   dbFile: string
   /** WebSocket / CORS 允许的来源白名单 */
   allowOrigins: string[]
+  /** 文件面板「本地」侧允许访问的根目录（绝对路径） */
+  localRoot: string
+  /** SFTP 传输并发上限 */
+  sftpConcurrency: number
 }
 
 /**
@@ -53,6 +66,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const e = parsed.data
   const dataDir = path.resolve(e.WEBTERM_DATA_DIR)
+  const localRoot = path.resolve(e.WEBTERM_LOCAL_ROOT ?? homedir())
+
+  if (!existsSync(localRoot)) {
+    throw new Error(
+      `WEBTERM_LOCAL_ROOT 指向的目录不存在：${localRoot}\n` +
+        '该目录是文件面板「本地」一侧的根，必须是已存在的目录。',
+    )
+  }
 
   return {
     host: e.WEBTERM_HOST,
@@ -67,6 +88,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     allowOrigins: e.WEBTERM_ALLOW_ORIGINS.split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    localRoot,
+    sftpConcurrency: e.WEBTERM_SFTP_CONCURRENCY,
   }
 }
 

@@ -43,6 +43,11 @@ export default function App() {
     applyTheme(mode)
   }, [mode])
 
+  // 首屏拉取保险库状态；未就绪期间 VaultGate 显示加载态
+  useEffect(() => {
+    void useVaultStore.getState().refresh()
+  }, [])
+
   // 保险库解锁状态变化时刷新会话库与凭据
   useEffect(() => {
     if (vaultReady && vaultUnlocked) {

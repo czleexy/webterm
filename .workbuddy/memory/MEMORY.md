@@ -22,12 +22,16 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 - `npm view <pkg> version` 调用较慢，一次查太多包会被超时中断，建议每批不超过 5 个包并给足 timeout
 - ⚠️ **编辑工具偶发「报告成功但未落盘」**，尤其是同一批并行 Edit 中的部分调用。改完关键文件后**必须 grep 核实**，否则会浪费大量时间排查幽灵类型错误
 - ⚠️ **tsc 增量缓存（`.tsbuildinfo`）会造成幽灵类型错误**：报「属性不存在」但文件里明明有。症状出现时 `rm -f packages/*/dist/.tsbuildinfo` 后重跑即可
+- ⚠️ **用 bash 后台 `&` 起的进程会随该条 bash 调用结束而死**（不是真正的常驻）。要跑「起服务 → 测试」这类组合，必须写在**同一个** Bash 调用里；跨调用存活请用工具的 `run_in_background`
+- ⚠️ **ssh2 服务端做跳板转发时，事件名是 `'tcpip'` 而不是 `'direct-tcpip'`**。见 `ssh2/lib/server.js` 的 `_onCHANNEL_OPEN`：判据是 `listenerCount(this, 'tcpip')`，emit 的是 `'tcpip'`，回调参数为 `{ destIP, destPort, srcIP, srcPort }`。名字注册错会让通道在握手期被自动拒绝（reason=1），且服务端不留任何日志
+- ⚠️ **`scrypt` 的 `maxmem` 默认只有 32MiB**，而 `128*N*r` 恰好等于该值时就会抛 `ERR_CRYPTO_INVALID_SCRYPT_PARAMS`（N=2^15, r=8 → 32MiB，正好踩线）。用高 N 必须显式传 `maxmem`
 
 ## 状态与进度（2026-09-28）
 
 - 已完成：阶段 0（骨架）、阶段 1（终端主干）、阶段 2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）
+- **阶段 2 端到端 36/36 通过**（`data/tmp/e2e-phase2.mjs`，自管 4 个 mock + 服务端两次启停）
+- 最新提交：`0a5b482` —— 修掉两个阻断性 bug：保险库 scrypt `maxmem` 超限（致 `/api/vault/setup` 恒 500）、mock 跳板事件名写成 `direct-tcpip`
 - 下一步：阶段 3 SFTP 文件传输
-- 阶段 2 的完整 E2E 脚本在 `data/tmp/e2e-phase2.mjs`（自管 4 个 mock + 服务端重启），**其执行曾被环境敏感内容审批拦截**，需要用户授权后重跑确认
 
 ## 项目约定
 
@@ -52,11 +56,11 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 
 ## 安全实现要点（阶段 2）
 
-- 主密钥由 `scrypt(password, salt, N=2^15, r=8, p=1)` 派生，**只存进程内存**，`lock()` 时 `fill(0)` 清零
+- 主密钥由 `scrypt(password, salt, N=2^15, r=8, p=1)` 派生，**只存进程内存**，`lock()` 时 `fill(0)` 清零；派生统一走 `deriveKey()` 单一入口（setup/unlock 参数漂移会导致旧数据解不开），且必须显式传 `maxmem`
 - 凭据存储格式：`AES-256-GCM`，密文 = `iv(12B) | authTag(16B) | ciphertext`，整体存 SQLite BLOB
 - 解锁校验用「已知明文的密文」（verifier），不用独立哈希 —— 少一套逻辑，且 GCM 的 authTag 天然防篡改
 - 锁定态访问需凭据的接口返回 **423 Locked**（区别于 401 认证失败）
-- mock SSH 服务端支持 `direct-tcpip`（当跳板机用）与 `MOCK_AUTH=publickey`（公钥经 stdin 传入，不落盘）
+- mock SSH 服务端支持跳板转发（ssh2 服务端侧注册的**事件名是 `'tcpip'`**）与 `MOCK_AUTH=publickey`（公钥经 stdin 传入，不落盘）
 
 ## 真机 192.168.1.254 的实测结论（重要）
 

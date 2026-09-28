@@ -15,6 +15,7 @@ const inputClass =
 export function VaultGate({ children }: { children: React.ReactNode }) {
   const ready = useVaultStore((s) => s.ready)
   const status = useVaultStore((s) => s.status)
+  const loadError = useVaultStore((s) => s.error)
   const refresh = useVaultStore((s) => s.refresh)
 
   const [busy, setBusy] = useState(false)
@@ -26,6 +27,33 @@ export function VaultGate({ children }: { children: React.ReactNode }) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-neutral-400">
         正在连接服务…
+      </div>
+    )
+  }
+
+  // 状态查询失败：只提供重试，不展示设置/解锁表单。
+  // 否则 status 为 null 会被当成「未初始化」，诱导用户重新设置主密码而覆盖已有保险库。
+  if (!status) {
+    return (
+      <div className="flex h-full items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">
+        <div
+          data-testid="vault-unreachable"
+          className="w-full max-w-sm rounded-xl border border-neutral-200 bg-white p-6 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+        >
+          <h1 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
+            无法连接服务端
+          </h1>
+          <p className="mt-1.5 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+            {loadError ?? '请确认服务端已启动，然后重试。'}
+          </p>
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            className="mt-4 w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white"
+          >
+            重试
+          </button>
+        </div>
       </div>
     )
   }

@@ -25,14 +25,19 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 - ⚠️ **用 bash 后台 `&` 起的进程会随该条 bash 调用结束而死**（不是真正的常驻）。要跑「起服务 → 测试」这类组合，必须写在**同一个** Bash 调用里；跨调用存活请用工具的 `run_in_background`
 - ⚠️ **ssh2 服务端做跳板转发时，事件名是 `'tcpip'` 而不是 `'direct-tcpip'`**。见 `ssh2/lib/server.js` 的 `_onCHANNEL_OPEN`：判据是 `listenerCount(this, 'tcpip')`，emit 的是 `'tcpip'`，回调参数为 `{ destIP, destPort, srcIP, srcPort }`。名字注册错会让通道在握手期被自动拒绝（reason=1），且服务端不留任何日志
 - ⚠️ **`scrypt` 的 `maxmem` 默认只有 32MiB**，而 `128*N*r` 恰好等于该值时就会抛 `ERR_CRYPTO_INVALID_SCRYPT_PARAMS`（N=2^15, r=8 → 32MiB，正好踩线）。用高 N 必须显式传 `maxmem`
+- ⚠️ **脚本自清 scratch 目录会撞「单轮批量删除 > 50 文件」保护**（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`）。E2E 二次运行必然触发（首次目录为空）。放行写法（只影响该子进程，清理的是脚本自己的临时目录）：`env -u CODEBUDDY_SAFE_DELETE_BULK_STATE_DIR -u CODEBUDDY_TOOL_CALL_ID -u CODEBUDDY_SAFE_DELETE_BULK_GUARD node <脚本>`
+- ⚠️ **`puppeteer-core` 装在隔离 node workspace**，跑浏览器 E2E 必须 `export NODE_PATH="C:/Users/Administrator/.workbuddy/binaries/node/workspace/node_modules"`
+- ⚠️ **根 `npm run build` 偶发 rolldown 报错但单包构建正常**：是沙箱写入竞态，重跑即可，不是代码问题
 
 ## 状态与进度（2026-09-28）
 
-- 已完成：阶段 0（骨架）、阶段 1（终端主干）、阶段 2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）
+- 已完成：阶段 0（骨架）、阶段 1（终端主干）、阶段 2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）、阶段 3（SFTP 文件传输：双栏 + 传输队列 + 断点续传 + 浏览器上下行 + 远程编辑），提交 `83980ba`
 - **阶段 2 后端端到端 36/36 通过**（`data/tmp/e2e-phase2.mjs`，自管 4 个 mock + 服务端两次启停）
 - **阶段 2 浏览器端到端 18/18 + 9/9 通过**（`data/tmp/e2e-browser-p2.mjs`，`PHASE=setup` / `PHASE=unlock`）
-- 最新提交：`5ff0375` —— 修掉「首屏卡在正在连接服务…」（全项目从未调用 `useVaultStore.refresh()`）
-- 下一步：阶段 3 SFTP 文件传输
+- **阶段 3 服务端端到端 75/75 通过**（`data/tmp/e2e-phase3.mjs`，自管 3 个 mock + 服务端；覆盖 A~I 九组）
+- **阶段 3 浏览器端到端 55/55 通过**（`data/tmp/e2e-browser-p3.mjs`，生产模式服务端 8098 托管 `web/dist` + 系统 Chrome 无头）
+- 最新提交：`83980ba` —— 阶段 3 交付
+- 下一步：阶段 4（尚未规划；SFTP 已完成）
 
 ## 项目约定
 

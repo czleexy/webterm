@@ -29,21 +29,36 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 - ⚠️ **`puppeteer-core` 装在隔离 node workspace**，跑浏览器 E2E 必须 `export NODE_PATH="C:/Users/Administrator/.workbuddy/binaries/node/workspace/node_modules"`
 - ⚠️ **根 `npm run build` 偶发 rolldown 报错但单包构建正常**：是沙箱写入竞态，重跑即可，不是代码问题
 
-## 状态与进度（2026-09-28）
+## 状态与进度（2026-09-29）
 
-- 已完成：阶段 0（骨架）、阶段 1（终端主干）、阶段 2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）、阶段 3（SFTP 文件传输：双栏 + 传输队列 + 断点续传 + 浏览器上下行 + 远程编辑），提交 `83980ba`
-- **阶段 2 后端端到端 36/36 通过**（`data/tmp/e2e-phase2.mjs`，自管 4 个 mock + 服务端两次启停）
-- **阶段 2 浏览器端到端 18/18 + 9/9 通过**（`data/tmp/e2e-browser-p2.mjs`，`PHASE=setup` / `PHASE=unlock`）
-- **阶段 3 服务端端到端 75/75 通过**（`data/tmp/e2e-phase3.mjs`，自管 3 个 mock + 服务端；覆盖 A~I 九组）
-- **阶段 3 浏览器端到端 55/55 通过**（`data/tmp/e2e-browser-p3.mjs`，生产模式服务端 8098 托管 `web/dist` + 系统 Chrome 无头）
-- 最新提交：`83980ba` —— 阶段 3 交付
-- 下一步：阶段 4（尚未规划；SFTP 已完成）
+- 已完成：阶段 0（骨架）、阶段 1（终端主干）、阶段 2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）、阶段 3（SFTP 文件传输）、**阶段 4（Telnet 明文终端，端口 23，插入交付）**
+- **阶段 2 服务端 36/36 / 浏览器 18+9**；**阶段 3 服务端 75/75 / 浏览器 55/55**
+- **阶段 4 服务端 53/53**（`data/tmp/e2e-telnet.mjs`）／**浏览器 80/80**（`data/tmp/e2e-browser-telnet.mjs`）
+- 最新提交：`2339cb8`（阶段 4 代码）+ `8f497ff`（阶段 4 文档），已推送 GitHub
+- 下一步：阶段 5 端口转发与隧道（计划文档里原「阶段 4 端口转发」因 Telnet 插入已顺延为 5，后续 6~9）
+
+## Telnet 实现要点（阶段 4）
+
+- **会话配置是按 `protocol` 判别的联合**（`SshSessionConfig | TelnetSessionConfig`），别改成「一堆可选字段」；落库的 `SessionRecord` 是扁平结构，必填性由 zod superRefine 把关（Telnet 禁 `credentialId`、`jumpChain` 必须空）
+- `packages/server/src/telnet/`：negotiation（IAC 状态机）/ transport（`net` + 本地回显兜底 + 0xFF 转义）/ errors。**零新增依赖**
+- **本地回显兜底**：设备不声明 `WILL ECHO` 时由服务端补回显（含退格 `\b \b`，计数不越界）；设备声明了就绝不重复回显
+- **Telnet 无 SFTP**：服务端对 Telnet 会话开 SFTP 返回 400 `INVALID_CONFIG`；前端用 `tab.protocol` / `sftpAvailable` 隐藏入口
+- `packages/web/src/utils/protocol.ts` 集中协议收窄与徽标配色；终端工具栏协议徽标的 title 带完整协商详情（排障入口）
+- mock：`packages/server/dev/mock-telnet-server.mjs`，`MOCK_TELNET_ECHO=0` / `MOCK_TELNET_NO_NEGOTIATION=1` / `MOCK_TELNET_NAME`；**CR 与 LF 都认行结束（CRLF 算一次）**
+
+### Telnet 排障教训
+
+- **mock 只认 LF、xterm 回车只发 CR** → 表现为「按回车没反应」。修 mock，不修产品（产品原样透传是对的，真实设备都接受 CR）
+- 文案断言会撞车（Telnet 提示段落里也有「跳板链」三个字），改断言 UI 专属文案（如「+ 添加一跳」）
+- zod `.default()` 会补字段：Telnet 记录读回来有 `jumpChain: []`，断言写「空」而非「不存在」
+- `data-testid={\`protocol-${value}\`}` 是模板字面量，grep 字面量查不到 —— 别用 grep 否定已跑通的测试
+- 读 xterm 只能读到视口行，大输出（`big 128`）会滚出视口，断言要紧跟对应命令
 
 ## 项目约定
 
 - **`packages/shared` 必须先构建**才能被 server / web 引用；根 `package.json` 已用 `predev` / `prebuild` / `pretypecheck` / `prestart` 自动处理
 - 终端数据传输**一律使用 WebSocket 二进制帧**，仅控制类消息用 JSON 文本帧
-- 凭据（密码、私钥口令）**任何时候都不明文落盘**
+- 凭据（密码、私钥口令）**任何时候都不明文落盘**；**Telnet 会话不进任何凭据**（口令由用户在终端里交互输入，zod 校验显式拒绝 credentialId）
 - 服务默认只监听 `127.0.0.1`；开放局域网需显式配置并设置访问密码
 - TypeScript 开启了 `verbatimModuleSyntax`，类型导入必须写 `import type`
 - 服务端静态托管**只在生产模式生效**（开发态由 Vite 提供前端，避免误访问过期构建产物）

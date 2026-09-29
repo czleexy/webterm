@@ -21,10 +21,10 @@ const PHASES: PhaseItem[] = [
   { id: 3, name: 'SFTP 文件传输', scope: '双栏浏览 / 队列 / 断点续传 / 远程编辑', status: 'done' },
   { id: 4, name: 'Telnet 明文终端', scope: '选项协商 / NAWS / 本地回显 / 端口 23', status: 'done' },
   { id: 5, name: '端口转发与隧道', scope: '-L / -R / -D SOCKS5 / 随会话自动启动', status: 'done' },
-  { id: 6, name: '自动化与批量运维', scope: '触发器 / 脚本沙箱 / 批量执行', status: 'planned' },
-  { id: 7, name: '日志与审计', scope: '会话日志 / 归档 / 审计表', status: 'planned' },
-  { id: 8, name: '体验打磨', scope: '主题 / 快捷键 / 搜索 / 分屏', status: 'planned' },
-  { id: 9, name: '插件与打包', scope: '插件宿主 / 生产构建', status: 'planned' },
+  { id: 6, name: '自动化与批量运维', scope: '触发器 / 宏按钮栏 / 沙箱脚本 / 批量执行 / 同步输入', status: 'done' },
+  { id: 7, name: '日志与审计', scope: '会话日志 / 归档轮转 / 审计表 / 脱敏规则', status: 'planned' },
+  { id: 8, name: '体验打磨', scope: '主题与字体 / 快捷键 / 终端搜索 / 分屏', status: 'planned' },
+  { id: 9, name: '插件与打包', scope: '插件宿主 / 打包发布（npm · Docker）', status: 'planned' },
 ]
 
 const STATUS_BADGE: Record<PhaseStatus, { text: string; className: string }> = {
@@ -99,7 +99,7 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
         <b className="font-medium text-neutral-700 dark:text-neutral-300">已完成阶段 0 ~ 6</b>
         ：多标签终端、会话库与主密码保险库、SFTP 双栏文件传输、SSH / Telnet 双协议支持、
         端口转发（-L / -R / -D SOCKS5），以及自动化与批量运维
-        （触发器、按钮栏、沙箱脚本、同步输入、批量执行）。
+        （触发器、按钮栏、沙箱脚本、同步输入、批量执行）。下一步是阶段 7：日志与审计。
       </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-2">

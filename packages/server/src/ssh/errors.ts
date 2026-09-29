@@ -193,5 +193,7 @@ export const ERROR_CODE_DESCRIPTION: Record<TerminalErrorCode, string> = {
   INVALID_CONFIG: '请求参数非法',
   FORWARD_REJECTED: '跳板机拒绝转发',
   FORWARD_TIMEOUT: '跳板机转发超时',
+  PORT_IN_USE: '端口已被占用',
+  PORT_DENIED: '无权监听该端口',
   INTERNAL: '服务端内部错误',
 }

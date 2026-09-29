@@ -38,6 +38,8 @@ const STATUS_BY_CODE: Record<TerminalErrorCode, number> = {
   INVALID_CONFIG: 400,
   FORWARD_REJECTED: 502,
   FORWARD_TIMEOUT: 504,
+  PORT_IN_USE: 409,
+  PORT_DENIED: 403,
   INTERNAL: 500,
 }
 

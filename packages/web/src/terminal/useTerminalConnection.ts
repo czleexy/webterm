@@ -231,6 +231,12 @@ export function useTerminalConnection({
           wsPath: conn.wsPath,
           negotiation: conn.negotiation,
         })
+        // 随会话自动启动的隧道可以失败（端口被占用等），但这不影响连接本身。
+        // 必须明确告诉用户，否则他会以为「隧道配好了」却在别处找不到原因。
+        if (conn.tunnelWarnings?.length) {
+          for (const warning of conn.tunnelWarnings) writeNotice(warning, 'error')
+          setBannerRef.current(conn.tunnelWarnings.join('\n'))
+        }
         openSocket(conn)
       } catch (err) {
         if (disposedRef.current) return

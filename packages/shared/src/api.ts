@@ -2,9 +2,11 @@
  * REST 接口的请求 / 响应契约。
  * 阶段 1 新增：连接探测与终端会话创建。
  * 阶段 4 新增：Telnet（按 protocol 判别的会话配置）。
+ * 阶段 5 新增：端口转发与隧道（见 tunnel.ts）。
  */
 import type { ConnectionProtocol } from './constants.js'
 import { DEFAULT_PORTS } from './constants.js'
+import type { TunnelSpec, TunnelType } from './tunnel.js'
 
 /** 统一错误响应体 */
 export interface ApiError {
@@ -195,6 +197,11 @@ export interface CreateTerminalResponse {
   title: string
   /** 建连后的协商信息 */
   negotiation: TerminalNegotiationSummary
+  /**
+   * 随会话自动启动隧道时的告警（非致命）。
+   * 例如「端口 13306 已被占用」—— 会话本身是连上了的，不该让用户以为连接失败。
+   */
+  tunnelWarnings?: string[]
 }
 
 /** 协商摘要（与 shared/ws.ts 的 TerminalNegotiationInfo 保持一致但更精简） */
@@ -342,6 +349,13 @@ export interface SessionRecord {
   legacyCompat?: 'auto' | 'always' | 'never'
   /** 仅 SSH 有意义：跳板链，按连接顺序排列；最后一跳之后连接 record.host */
   jumpChain?: JumpHop[]
+  /**
+   * 仅 SSH 有意义：随会话自动启动的隧道。
+   *
+   * 这里只存「定义」不存运行状态 —— 端口占用之类的运行时失败不写回配置，
+   * 用户下次连接时仍然会按原样尝试，而不是被上一次的偶然失败永久改坏。
+   */
+  tunnels?: TunnelSpec[]
 }
 
 export type SupportedEncodingLiteral = 'utf8' | 'gbk' | 'gb18030' | 'big5' | 'latin1'
@@ -395,6 +409,10 @@ export interface CapabilitiesResponse {
   supportedEncodings: string[]
   /** 支持的连接协议（ssh + telnet） */
   supportedProtocols: ConnectionProtocol[]
+  /** 支持的端口转发类型（阶段 5） */
+  supportedTunnelTypes: TunnelType[]
+  /** 单个会话允许的隧道数量上限 */
+  maxTunnelsPerSession: number
   /** 单条终端输出的背压水位（字节） */
   backpressureHighWaterMark: number
   backpressureLowWaterMark: number

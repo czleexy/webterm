@@ -8,10 +8,12 @@ import { WorkspaceTabs, type WorkspaceTabItem } from './components/WorkspaceTabs
 import { WelcomePane } from './components/WelcomePane'
 import { NewSessionDialog, type ConnectMode } from './components/NewSessionDialog'
 import { SessionDialog } from './components/SessionDialog'
+import { TunnelPanel } from './components/TunnelPanel'
 import { VaultGate } from './components/VaultGate'
 import { useHealth } from './hooks/useHealth'
 import { TERMINAL_TAB_TONE, useTerminalStore, newTab, newTabFromSession } from './store/useTerminalStore'
 import { SFTP_TAB_TONE, useSftpStore } from './store/useSftpStore'
+import { useTunnelStore } from './store/useTunnelStore'
 import { useVaultStore } from './store/useVaultStore'
 import { useLibraryStore } from './store/useLibraryStore'
 import { TerminalPane } from './terminal/TerminalPane'
@@ -47,6 +49,10 @@ export default function App() {
   const nodes = useLibraryStore((s) => s.nodes)
   const credentials = useLibraryStore((s) => s.credentials)
 
+  const openTunnels = useTunnelStore((s) => s.openPanel)
+  // 只统计运行中的：徽标上的数字要能回答「现在有几条隧道在工作」
+  const tunnelCount = useTunnelStore((s) => s.tunnels.filter((t) => t.status === 'active').length)
+
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickMode, setQuickMode] = useState<ConnectMode>('terminal')
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false)
@@ -75,6 +81,15 @@ export default function App() {
       void useLibraryStore.getState().refresh()
     }
   }, [vaultReady, vaultUnlocked])
+
+  /**
+   * 会话数量变化时同步一次隧道列表。
+   * 面板没打开时也会拉：入口上的徽标要准确，而且会话被关闭会连带回收隧道，
+   * 不刷新的话徽标会一直停在旧数字上，看着像隧道还活着。
+   */
+  useEffect(() => {
+    if (vaultUnlocked) void useTunnelStore.getState().refresh()
+  }, [tabs.length, vaultUnlocked])
 
   /** 统一的标签视图：终端在前、SFTP 在后 */
   const tabItems = useMemo<WorkspaceTabItem[]>(() => {
@@ -341,7 +356,12 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
-      <AppHeader status={health.status} serverVersion={health.data?.version} />
+      <AppHeader
+        status={health.status}
+        serverVersion={health.data?.version}
+        onOpenTunnels={openTunnels}
+        tunnelCount={tunnelCount}
+      />
 
       <div className="flex min-h-0 flex-1">
         <SessionSidebar
@@ -418,6 +438,8 @@ export default function App() {
         defaultParentId={sessionParentId}
         onSaved={handleSavedSession}
       />
+
+      <TunnelPanel />
     </div>
   )
 }

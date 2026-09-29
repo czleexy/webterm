@@ -217,6 +217,12 @@ export class LibraryStore {
       if ((session.jumpChain ?? []).length > 0) {
         throw new LibraryError('CREDENTIAL_NOT_APPLICABLE', 'Telnet 不支持跳板链')
       }
+      if ((session.tunnels ?? []).length > 0) {
+        throw new LibraryError(
+          'CREDENTIAL_NOT_APPLICABLE',
+          'Telnet 没有可承载转发通道的协议层，不支持端口转发',
+        )
+      }
       return
     }
 

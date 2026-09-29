@@ -16,6 +16,7 @@ import type {
   SessionConfig,
   SshTarget,
   TerminalListItem,
+  TunnelSpec,
 } from '@webterm/shared'
 import {
   DEFAULT_TERM_COLS,
@@ -48,6 +49,7 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
     // 或 config（快速连接，前端直传，不落库）
     let config: SessionConfig | undefined = input.config
     let jumpChain: SshTarget[] | undefined
+    let tunnels: TunnelSpec[] | undefined
 
     if (input.sessionId) {
       try {
@@ -76,6 +78,8 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
             legacyCompat: record.legacyCompat ?? 'auto',
           }
           jumpChain = plan.jumpChain.length > 0 ? plan.jumpChain : undefined
+          // 随会话自动启动的隧道（阶段 5）。失败不阻断连接，只回传告警
+          tunnels = (record.tunnels ?? []).length > 0 ? record.tunnels : undefined
         }
       } catch (err) {
         if (err instanceof VaultError) {
@@ -99,6 +103,7 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
       session = await manager.create({
         config,
         jumpChain,
+        tunnels,
         title: input.title ?? targetLabel(config),
       })
     } catch (err) {
@@ -133,6 +138,9 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
           },
     }
 
+    const tunnelWarnings = session.tunnelStartWarnings
+    if (tunnelWarnings.length > 0) response.tunnelWarnings = tunnelWarnings
+
     return reply.code(201).send(response)
   })
 
@@ -158,7 +166,8 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
   })
 
   app.delete<{ Params: { id: string } }>('/terminals/:id', async (request, reply) => {
-    const closed = manager.close(request.params.id)
+    // close 会先撤掉隧道（等监听端口真正释放）再拆 SSH 连接
+    const closed = await manager.close(request.params.id)
     if (!closed) {
       return sendError(reply, 404, 'TERMINAL_NOT_FOUND', '终端不存在或已关闭')
     }

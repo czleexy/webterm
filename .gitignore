@@ -14,12 +14,16 @@ dist/
 /data/*
 !/data/tmp/
 /data/tmp/*
-# 例外：阶段 3 的端到端验证入口与定位探针随仓库分发 ——
+# 例外：各阶段的端到端验证入口与定位探针随仓库分发 ——
 # docs/03-测试指南.md 里按路径引用了它们，且这些脚本只用内置 mock 与临时目录，不含任何凭据
 !/data/tmp/e2e-phase3.mjs
 !/data/tmp/e2e-browser-p3.mjs
 !/data/tmp/probe-p3-list.mjs
 !/data/tmp/probe-p3-server.mjs
+!/data/tmp/e2e-telnet.mjs
+!/data/tmp/e2e-browser-telnet.mjs
+!/data/tmp/e2e-tunnel.mjs
+!/data/tmp/e2e-browser-tunnel.mjs
 
 # 子包内的运行时数据目录（服务端默认数据目录等）
 packages/*/data/

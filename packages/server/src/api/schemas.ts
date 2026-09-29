@@ -12,6 +12,8 @@ import {
   DEFAULT_TERM,
   DEFAULT_TERM_COLS,
   DEFAULT_TERM_ROWS,
+  DEFAULT_TUNNEL_BIND_HOST,
+  MAX_TUNNELS_PER_SESSION,
   SUPPORTED_ENCODINGS,
 } from '@webterm/shared'
 
@@ -181,6 +183,52 @@ const JumpHopSchema = z.object({
   legacyCompat: LegacyCompatSchema.optional(),
 })
 
+/* ------------------------------------------------------------------ */
+/* 阶段 5：端口转发与隧道                                               */
+/* ------------------------------------------------------------------ */
+
+/** 监听端口：1~65535。远程转发另允许 0（由远端分配空闲端口） */
+const TunnelPortSchema = z.coerce.number().int().min(1).max(65535)
+
+/**
+ * 监听地址可以填 0.0.0.0 / :: / 本机任意地址，因此不能复用「目标主机」的
+ * 校验思路去限制取值 —— 但空白与协议前缀同样要挡住。
+ */
+const TunnelBindHostSchema = HostSchema.default(DEFAULT_TUNNEL_BIND_HOST)
+
+export const LocalForwardSpecSchema = z.object({
+  type: z.literal('local'),
+  bindHost: TunnelBindHostSchema,
+  bindPort: TunnelPortSchema,
+  targetHost: HostSchema,
+  targetPort: TunnelPortSchema,
+})
+
+export const RemoteForwardSpecSchema = z.object({
+  type: z.literal('remote'),
+  bindHost: TunnelBindHostSchema,
+  bindPort: z.coerce.number().int().min(0).max(65535),
+  targetHost: HostSchema,
+  targetPort: TunnelPortSchema,
+})
+
+export const DynamicForwardSpecSchema = z.object({
+  type: z.literal('dynamic'),
+  bindHost: TunnelBindHostSchema,
+  bindPort: TunnelPortSchema,
+})
+
+export const TunnelSpecSchema = z.discriminatedUnion('type', [
+  LocalForwardSpecSchema,
+  RemoteForwardSpecSchema,
+  DynamicForwardSpecSchema,
+])
+
+export const CreateTunnelRequestSchema = z.object({
+  terminalId: z.string().trim().min(1, '必须指定宿主终端'),
+  spec: TunnelSpecSchema,
+})
+
 /**
  * 会话库记录。
  *
@@ -199,6 +247,10 @@ export const SessionRecordSchema = z
     term: z.string().trim().min(1).max(64).default(DEFAULT_TERM),
     legacyCompat: LegacyCompatSchema.optional(),
     jumpChain: z.array(JumpHopSchema).max(5, '跳板链最深 5 级').default([]),
+    tunnels: z
+      .array(TunnelSpecSchema)
+      .max(MAX_TUNNELS_PER_SESSION, `单个会话最多 ${MAX_TUNNELS_PER_SESSION} 条隧道`)
+      .default([]),
   })
   .superRefine((value, ctx) => {
     if (value.protocol === 'ssh') {
@@ -210,7 +262,7 @@ export const SessionRecordSchema = z
       }
       return
     }
-    // Telnet：明令禁止携带凭据与跳板链，避免出现「看着像配了、实际不生效」的配置
+    // Telnet：明令禁止携带凭据、跳板链与隧道，避免出现「看着像配了、实际不生效」的配置
     if (value.credentialId) {
       ctx.addIssue({
         code: 'custom',
@@ -223,6 +275,13 @@ export const SessionRecordSchema = z
         code: 'custom',
         path: ['jumpChain'],
         message: 'Telnet 不支持跳板链',
+      })
+    }
+    if (value.tunnels.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['tunnels'],
+        message: 'Telnet 没有可承载转发通道的协议层，不支持端口转发',
       })
     }
   })

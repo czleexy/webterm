@@ -74,6 +74,10 @@ export type TerminalErrorCode =
   | 'FORWARD_REJECTED'
   /** 跳板机转发通道建立超时 */
   | 'FORWARD_TIMEOUT'
+  /** 监听端口已被占用（阶段 5 端口转发） */
+  | 'PORT_IN_USE'
+  /** 无权监听该地址/端口（如 1024 以下的特权端口） */
+  | 'PORT_DENIED'
   /** 服务端内部错误 */
   | 'INTERNAL'
 

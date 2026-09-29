@@ -10,7 +10,9 @@ import {
   BACKPRESSURE_HIGH_WATER_MARK,
   BACKPRESSURE_LOW_WATER_MARK,
   CONNECTION_PROTOCOLS,
+  MAX_TUNNELS_PER_SESSION,
   SUPPORTED_ENCODINGS,
+  TUNNEL_TYPES,
 } from '@webterm/shared'
 import { describeProfiles, getSsh2Version } from '../../ssh/algorithms.js'
 
@@ -22,6 +24,8 @@ export const capabilityRoutes: FastifyPluginAsync = async (app) => {
       profiles: describeProfiles(),
       supportedEncodings: [...SUPPORTED_ENCODINGS],
       supportedProtocols: [...CONNECTION_PROTOCOLS],
+      supportedTunnelTypes: [...TUNNEL_TYPES],
+      maxTunnelsPerSession: MAX_TUNNELS_PER_SESSION,
       backpressureHighWaterMark: BACKPRESSURE_HIGH_WATER_MARK,
       backpressureLowWaterMark: BACKPRESSURE_LOW_WATER_MARK,
     }

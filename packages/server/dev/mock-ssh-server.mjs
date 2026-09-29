@@ -26,6 +26,11 @@
  * 因此把多个实例串联即可验证 ProxyJump：A(2222) → B(2223) → C(2224)。
  * 公钥认证模式下公钥经 stdin 传入（一行 base64），避免密钥落盘。
  *
+ * 端口转发（阶段 5）支持：
+ *   - 本地转发 / 动态转发：走 direct-tcpip（与跳板链同一套通道），无需额外开关
+ *   - 远程转发：接受 tcpip-forward 全局请求，真的在对应地址上监听，
+ *     再把每个入站连接用 forwarded-tcpip 通道回送给客户端，与真实 sshd 行为一致
+ *
  * SFTP 子系统：见 mock-sftp.mjs —— 真机测试主机拒绝 shell/exec/subsystem，
  * 文件传输链路只能靠这里的自实现后端来验证。
  *
@@ -33,6 +38,7 @@
  */
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { attachSftpServer } from './mock-sftp.mjs'
@@ -52,6 +58,27 @@ const USER = process.env.MOCK_USER || 'demo'
 const PASS = process.env.MOCK_PASS || 'demo'
 const LEGACY_ONLY = process.env.MOCK_LEGACY === '1'
 const AUTH_MODE = process.env.MOCK_AUTH || 'password'
+
+/** 远程转发（-R）时由本服务端建立的监听器；key = `bindAddr:port` */
+const remoteListeners = new Map()
+
+/** 关闭一个远程转发监听并断开其上所有连接（cancel 与连接结束时都要调） */
+function closeRemoteListener(entry) {
+  if (!entry) return
+  try {
+    entry.server.close()
+  } catch {
+    /* 忽略 */
+  }
+  for (const conn of entry.conns) {
+    try {
+      conn.destroy()
+    } catch {
+      /* 忽略 */
+    }
+  }
+  entry.conns.clear()
+}
 
 /** 一次性客户端公钥（公钥认证模式）：经 stdin 传入一行 base64 */
 const authorizedPubKeys = []
@@ -125,7 +152,6 @@ const server = new Server(
       // 且 info 为 { destIP, destPort, srcIP, srcPort }。注册错名字会导致握手期即被拒绝。
       client.on('tcpip', (accept, reject, info) => {
         console.log(`[mock-ssh] direct-tcpip -> ${info.destIP}:${info.destPort}`)
-        const net = require('node:net')
         const upstream = net.connect(info.destPort, info.destIP, () => {
           const channel = accept()
           upstream.pipe(channel).pipe(upstream)
@@ -148,6 +174,76 @@ const server = new Server(
             /* 忽略 */
           }
         })
+      })
+
+      // 远程转发（-R）支持：接受 tcpip-forward 全局请求，真的在对应地址上监听，
+      // 再把每个入站连接通过 forwarded-tcpip 通道回送给客户端 ——
+      // 这正是真实 sshd 的行为，因此 -R 链路可以端到端验证，而不必假装成功。
+      //
+      // 注意 accept(chosenPort) 只在请求端口为 0（由服务端分配）时才需要传，
+      // ssh2 会把它写进请求应答；固定端口时传了也无害。
+      client.on('request', (accept, reject, name, info) => {
+        if (name === 'tcpip-forward') {
+          const bindAddr = info.bindAddr
+          const wanted = info.bindPort
+          const conns = new Set()
+          const server = net.createServer((socket) => {
+            conns.add(socket)
+            socket.on('close', () => conns.delete(socket))
+            const actual = server.address()?.port ?? wanted
+            client.forwardOut(
+              bindAddr,
+              actual,
+              socket.remoteAddress ?? '127.0.0.1',
+              socket.remotePort ?? 0,
+              (err, channel) => {
+                if (err) {
+                  console.log(`[mock-ssh] forwarded-tcpip 回连失败: ${err.message}`)
+                  socket.destroy()
+                  return
+                }
+                socket.pipe(channel).pipe(socket)
+                const cleanup = () => {
+                  try {
+                    socket.destroy()
+                    channel.close()
+                  } catch {
+                    /* 忽略 */
+                  }
+                }
+                socket.on('error', cleanup)
+                channel.on('close', cleanup)
+              },
+            )
+          })
+          server.on('error', (err) => {
+            console.log(`[mock-ssh] tcpip-forward 监听失败: ${err.message}`)
+            try {
+              reject?.()
+            } catch {
+              /* 忽略 */
+            }
+          })
+          server.listen(wanted, bindAddr, () => {
+            const actual = server.address().port
+            remoteListeners.set(`${bindAddr}:${actual}`, { server, conns })
+            console.log(`[mock-ssh] tcpip-forward 已在 ${bindAddr}:${actual} 监听`)
+            accept?.(actual)
+          })
+          return
+        }
+        if (name === 'cancel-tcpip-forward') {
+          const key = `${info.bindAddr}:${info.bindPort}`
+          const entry = remoteListeners.get(key)
+          if (entry) {
+            remoteListeners.delete(key)
+            closeRemoteListener(entry)
+            console.log(`[mock-ssh] cancel-tcpip-forward ${key}`)
+          }
+          accept?.()
+          return
+        }
+        reject?.()
       })
 
       client.on('session', (accept) => {
@@ -210,6 +306,15 @@ const server = new Server(
 
     client.on('error', (err) => {
       console.log('[mock-ssh] 客户端错误:', err.message)
+    })
+
+    // 连接断开时清掉本连接建立的远程转发监听，否则端口会一直被占着
+    client.on('close', () => {
+      for (const key of [...remoteListeners.keys()]) {
+        const entry = remoteListeners.get(key)
+        remoteListeners.delete(key)
+        closeRemoteListener(entry)
+      }
     })
   },
 )

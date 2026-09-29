@@ -6,7 +6,7 @@
  * 数据库只负责持久化会话配置与凭据，两者职责不重叠。
  */
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import type { SessionConfig, SshTarget, TerminalListItem } from '@webterm/shared'
+import type { SessionConfig, SshTarget, TerminalListItem, TunnelSpec } from '@webterm/shared'
 import {
   TERMINAL_ATTACH_GRACE_MS,
   TERMINAL_IDLE_TIMEOUT_MS,
@@ -20,6 +20,8 @@ export interface CreateTerminalOptions {
   config: SessionConfig
   /** 跳板链（已解密为明文 target，按连接顺序）；最后一跳之后才是 config.target */
   jumpChain?: SshTarget[]
+  /** 随会话自动启动的隧道定义（仅 SSH） */
+  tunnels?: TunnelSpec[]
   title: string
 }
 
@@ -41,6 +43,11 @@ export class TerminalManager {
 
   get count(): number {
     return this.sessions.size
+  }
+
+  /** 全部存活会话（隧道列表等需要遍历会话内部状态的场景用） */
+  all(): TerminalSession[] {
+    return [...this.sessions.values()]
   }
 
   list(): TerminalListItem[] {
@@ -72,6 +79,7 @@ export class TerminalManager {
       title: opts.title,
       config: opts.config,
       jumpChain: opts.jumpChain,
+      tunnels: opts.tunnels,
       knownHosts: this.knownHosts,
       logger: this.logger,
     })
@@ -112,10 +120,16 @@ export class TerminalManager {
     return session
   }
 
-  /** 关闭并移除一个终端；返回是否确实存在 */
-  close(terminalId: string): boolean {
+  /**
+   * 关闭并移除一个终端；返回是否确实存在。
+   *
+   * 先撤隧道再拆连接：本机监听的端口必须显式关闭才会释放，
+   * 而远程转发的撤销请求又需要一条还活着的 SSH 连接 —— 顺序反了会两头落空。
+   */
+  async close(terminalId: string): Promise<boolean> {
     const session = this.sessions.get(terminalId)
     if (!session) return false
+    await session.closeTunnels('用户主动关闭')
     session.shutdown('用户主动关闭')
     this.sessions.delete(terminalId)
     return true

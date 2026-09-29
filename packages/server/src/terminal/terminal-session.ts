@@ -32,6 +32,7 @@ import {
   type TelnetTarget,
   type TerminalErrorCode,
   type TerminalNegotiationInfo,
+  type TunnelSpec,
 } from '@webterm/shared'
 import {
   establishConnection,
@@ -42,6 +43,7 @@ import { classifySshError, SshError } from '../ssh/errors.js'
 import type { KnownHostsStore } from '../ssh/known-hosts.js'
 import { TelnetTransport } from '../telnet/transport.js'
 import { classifyTelnetError, TelnetError } from '../telnet/errors.js'
+import { TunnelManager } from '../tunnel/tunnel-manager.js'
 import { createEncodingBridge, type EncodingBridge } from './encoding.js'
 
 export interface TerminalSessionOptions {
@@ -51,6 +53,8 @@ export interface TerminalSessionOptions {
   config: SessionConfig
   /** 跳板链（已解密为明文 target，按连接顺序）；最后一跳之后才是 config.target */
   jumpChain?: SshTarget[]
+  /** 随会话自动启动的隧道定义（仅 SSH）；启动失败不阻断会话建立 */
+  tunnels?: TunnelSpec[]
   knownHosts: KnownHostsStore
   acceptHostKeyMismatch?: boolean
   logger: TerminalLogger
@@ -104,6 +108,10 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
   private stream: ClientChannel | undefined
   /** Telnet 传输（与 stream 互斥：同一会话只会走其中一条路径） */
   private telnet: TelnetTransport | undefined
+  /** 端口转发管理（仅 SSH；随会话一同创建与销毁） */
+  private tunnels: TunnelManager | undefined
+  /** 自动启动隧道过程中产生的告警，供 REST 响应回传 */
+  private tunnelWarnings: string[] = []
   private ws: WebSocket | undefined
 
   /** 已建立连接、但尚无 WS 客户端时暂存的输出 */
@@ -171,6 +179,21 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
   /** 会话是否仍可承载新通道 */
   get alive(): boolean {
     return this.state !== 'closed'
+  }
+
+  /**
+   * 端口转发管理器（阶段 5）。
+   * Telnet 会话与未就绪/已关闭的会话都没有 —— 调用方据此提示用户
+   * 「先建立 SSH 连接」而不是抛一个语焉不详的错误。
+   */
+  get tunnelManager(): TunnelManager | undefined {
+    if (this.state !== 'ready') return undefined
+    return this.tunnels
+  }
+
+  /** 自动启动隧道时的告警（非致命），由 REST 响应回传给用户 */
+  get tunnelStartWarnings(): string[] {
+    return this.tunnelWarnings
   }
 
   /** 当前是否已有一条可用的传输（SSH 通道或 Telnet 连接） */
@@ -355,7 +378,48 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     this.state = 'ready'
 
     this.attachStreamHandlers(stream)
+    await this.setupTunnels(conn.client)
     return info
+  }
+
+  /**
+   * 建立隧道管理器，并按会话配置自动启动隧道。
+   *
+   * 单条隧道失败（端口被占用是最常见的）绝不能把整个会话拖垮 ——
+   * 用户的目的是登进设备，隧道只是搭在路上的便车。失败以告警形式回传，
+   * 界面上是一条可忽略的提示，而不是「连接失败」。
+   */
+  private async setupTunnels(client: Client): Promise<void> {
+    const manager = new TunnelManager({
+      client,
+      terminalId: this.id,
+      terminalTitle: this.title,
+      logger: this.logger,
+    })
+    this.tunnels = manager
+
+    const specs = this.opts.tunnels ?? []
+    if (specs.length === 0) return
+
+    const results = await Promise.allSettled(
+      specs.map((spec) => manager.create(spec, { autoStarted: true })),
+    )
+
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') return
+      const spec = specs[index]
+      if (!spec) return
+      const err = result.reason as { message?: string; hint?: string } | undefined
+      const message = err?.message ?? String(result.reason)
+      const hint = err?.hint ? ` ${err.hint}` : ''
+      const where =
+        spec.type === 'dynamic'
+          ? `${spec.bindHost}:${spec.bindPort}`
+          : `${spec.bindHost}:${spec.bindPort} → ${spec.targetHost}:${spec.targetPort}`
+      const line = `自动启动隧道失败（${where}）：${message}${hint}`
+      this.tunnelWarnings.push(line)
+      this.logger.warn({ terminalId: this.id, spec: where, err: message }, '自动启动隧道失败')
+    })
   }
 
   /** 打开 PTY shell；失败时抛出携带细分错误码的 SshError */
@@ -717,6 +781,12 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
 
     this.stopBackpressureTimer()
 
+    // 先撤隧道再拆连接：远程转发的 cancel-tcpip-forward 需要一条可用的 SSH 连接，
+    // 本机监听则要显式 close 才会释放端口（`client.end()` 管不到本机端口）
+    void this.closeTunnels(reason).catch(() => {
+      /* destroy 内部已逐条容错，这里只兜底未预料的异常 */
+    })
+
     try {
       this.stream?.end()
     } catch {
@@ -759,5 +829,16 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
 
     this.logger.info({ terminalId: this.id, reason }, '终端会话已关闭')
     this.emit('closed', reason)
+  }
+
+  /**
+   * 关闭全部隧道并等待监听端口释放（幂等）。
+   * 与 shutdown 分开是因为用户主动关闭会话时，界面需要「端口已释放」这个事实
+   * 在响应返回前就成立，而不是稍后异步成立。
+   */
+  async closeTunnels(reason: string): Promise<void> {
+    const manager = this.tunnels
+    this.tunnels = undefined
+    if (manager) await manager.destroy(reason)
   }
 }

@@ -2,10 +2,12 @@
  * 会话编辑弹窗：创建/编辑会话库中的连接配置。
  *
  * 结构：协议 → 基本（名称/分组/主机/端口[/用户名]）→ 认证（凭据选择 + 内联新建）→
- * 终端（编码/TERM[/算法兼容]）→ 跳板链（逐跳配置，凭据同样引用保险库）。
+ * 终端（编码/TERM[/算法兼容]）→ 跳板链（逐跳配置，凭据同样引用保险库）→
+ * 隧道（随会话自动启动的端口转发，阶段 5）。
  *
  * Telnet 与 SSH 的差异全部体现在「哪些字段存在」上：Telnet 没有认证阶段
- * （登录在终端里交互完成）、没有算法协商、也没有跳板链，因此这些段落整段不渲染。
+ * （登录在终端里交互完成）、没有算法协商、也没有跳板链与转发通道，
+ * 因此这些段落整段不渲染。
  * 因为共享的 SessionRecord 是「扁平 + 按协议可缺省」而不是判别联合，
  * 只有这里把住「不该出现的字段一律不写入」这条线，落库的数据才不会有脏字段。
  */
@@ -16,8 +18,17 @@ import type {
   LibraryNode,
   SessionRecord,
   SupportedEncoding,
+  TunnelSpec,
+  TunnelType,
 } from '@webterm/shared'
-import { DEFAULT_PORTS, PROTOCOL_LABEL, SUPPORTED_ENCODINGS } from '@webterm/shared'
+import {
+  DEFAULT_PORTS,
+  DEFAULT_TUNNEL_BIND_HOST,
+  PROTOCOL_LABEL,
+  SUPPORTED_ENCODINGS,
+  TUNNEL_TYPES,
+  TUNNEL_TYPE_LABEL,
+} from '@webterm/shared'
 import {
   createCredential,
   createLibraryNode,
@@ -68,6 +79,8 @@ interface SessionForm {
   term: string
   legacyCompat: 'auto' | 'always' | 'never'
   jumpChain: JumpHopForm[]
+  /** 随会话自动启动的隧道（阶段 5）；Telnet 无此概念 */
+  tunnels: TunnelRowForm[]
 }
 
 const EMPTY_FORM: SessionForm = {
@@ -82,6 +95,58 @@ const EMPTY_FORM: SessionForm = {
   term: 'xterm-256color',
   legacyCompat: 'auto',
   jumpChain: [],
+  tunnels: [],
+}
+
+/** 表单里的一行隧道定义（端口用字符串承载，便于输入中途的空值） */
+interface TunnelRowForm {
+  type: TunnelType
+  bindHost: string
+  bindPort: string
+  targetHost: string
+  targetPort: string
+}
+
+const NEW_TUNNEL_ROW: TunnelRowForm = {
+  type: 'local',
+  bindHost: DEFAULT_TUNNEL_BIND_HOST,
+  bindPort: '',
+  targetHost: '',
+  targetPort: '',
+}
+
+/** 表单行 → 契约对象；端口非法时返回 null（保存前的校验会拦下） */
+function rowToSpec(row: TunnelRowForm): TunnelSpec | null {
+  const bindPort = Number.parseInt(row.bindPort, 10)
+  if (!row.bindHost.trim() || !Number.isInteger(bindPort) || bindPort < 0 || bindPort > 65535) {
+    return null
+  }
+  if (row.type === 'dynamic') {
+    return bindPort >= 1 ? { type: 'dynamic', bindHost: row.bindHost.trim(), bindPort } : null
+  }
+  const targetPort = Number.parseInt(row.targetPort, 10)
+  if (row.type !== 'remote' && bindPort < 1) return null
+  if (!row.targetHost.trim() || !Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) {
+    return null
+  }
+  return {
+    type: row.type,
+    bindHost: row.bindHost.trim(),
+    bindPort,
+    targetHost: row.targetHost.trim(),
+    targetPort,
+  }
+}
+
+/** 契约对象 → 表单行（编辑已有会话时回填） */
+function specToRow(spec: TunnelSpec): TunnelRowForm {
+  return {
+    type: spec.type,
+    bindHost: spec.bindHost,
+    bindPort: String(spec.bindPort),
+    targetHost: spec.type === 'dynamic' ? '' : spec.targetHost,
+    targetPort: spec.type === 'dynamic' ? '' : String(spec.targetPort),
+  }
 }
 
 interface NewCredentialForm {
@@ -151,6 +216,7 @@ export function SessionDialog({
           username: h.username,
           credentialId: h.credentialId,
         })),
+        tunnels: (s.tunnels ?? []).map(specToRow),
       })
     } else {
       setForm({ ...EMPTY_FORM, parentId: defaultParentId })
@@ -211,6 +277,9 @@ export function SessionDialog({
         username: h.username.trim(),
         credentialId: h.credentialId,
       })),
+      // 填了一半的隧道（端口没填完）直接丢弃并保存其余部分 ——
+      // 因为一条写不完整的定义而拒绝整份会话配置，代价太大
+      tunnels: form.tunnels.map(rowToSpec).filter((s): s is TunnelSpec => s !== null),
     }
   }
 
@@ -567,6 +636,102 @@ export function SessionDialog({
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* 隧道：随会话自动启动的端口转发；Telnet 没有可承载转发通道的协议层 */}
+        {isTelnet ? null : (
+          <div className="mt-4">
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                端口转发（连接建立后自动启动）
+              </span>
+              <button
+                type="button"
+                data-testid="add-tunnel"
+                onClick={() => patch({ tunnels: [...form.tunnels, { ...NEW_TUNNEL_ROW }] })}
+                className="text-xs text-neutral-500 underline-offset-2 hover:underline dark:text-neutral-400"
+              >
+                + 添加隧道
+              </button>
+            </div>
+
+            {form.tunnels.length === 0 ? (
+              <p className="text-[11px] leading-relaxed text-neutral-400 dark:text-neutral-500">
+                例如 `-L 13306:10.0.0.5:3306`（本机连内网数据库）、`-D 1080`（本机 SOCKS5 代理）。
+                端口被占用等情况不会影响会话建立，只会在终端里给出提示。
+              </p>
+            ) : null}
+
+            {form.tunnels.map((row, i) => {
+              const update = (part: Partial<TunnelRowForm>) => {
+                const next = [...form.tunnels]
+                next[i] = { ...row, ...part }
+                patch({ tunnels: next })
+              }
+              return (
+                <div
+                  key={i}
+                  data-testid="session-tunnel-row"
+                  className="mt-2 rounded-md border border-neutral-200 px-2 py-2 dark:border-neutral-700"
+                >
+                  <div className="grid grid-cols-[92px_1fr_80px_auto] items-center gap-2">
+                    <select
+                      value={row.type}
+                      onChange={(e) => update({ type: e.target.value as TunnelType })}
+                      className={inputClass}
+                    >
+                      {TUNNEL_TYPES.map((t) => (
+                        <option key={t} value={t}>
+                          {TUNNEL_TYPE_LABEL[t]}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      placeholder="监听地址"
+                      value={row.bindHost}
+                      onChange={(e) => update({ bindHost: e.target.value })}
+                      spellCheck={false}
+                      className={inputClass}
+                    />
+                    <input
+                      placeholder={row.type === 'remote' ? '0=自动' : '端口'}
+                      value={row.bindPort}
+                      onChange={(e) => update({ bindPort: e.target.value })}
+                      inputMode="numeric"
+                      className={inputClass}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => patch({ tunnels: form.tunnels.filter((_, j) => j !== i) })}
+                      className="px-1 text-xs text-neutral-400 hover:text-red-500"
+                      title="删除此隧道"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  {row.type === 'dynamic' ? null : (
+                    <div className="mt-2 grid grid-cols-[1fr_80px_auto] items-center gap-2">
+                      <input
+                        placeholder={row.type === 'local' ? '目标主机（远端视角）' : '目标主机（本机视角）'}
+                        value={row.targetHost}
+                        onChange={(e) => update({ targetHost: e.target.value })}
+                        spellCheck={false}
+                        className={inputClass}
+                      />
+                      <input
+                        placeholder="端口"
+                        value={row.targetPort}
+                        onChange={(e) => update({ targetPort: e.target.value })}
+                        inputMode="numeric"
+                        className={inputClass}
+                      />
+                      <span className="text-[11px] text-neutral-400 dark:text-neutral-500">目标</span>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
 

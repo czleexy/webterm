@@ -6,12 +6,14 @@ import {
   type CreateLibraryNodeRequest,
   type CreateTerminalRequest,
   type CreateTerminalResponse,
+  type CreateTunnelRequest,
   type CredentialSummary,
   type HealthResponse,
   type LibraryNode,
   type LibraryTreeResponse,
   type ListCredentialsResponse,
   type ListTerminalsResponse,
+  type ListTunnelsResponse,
   type ProbeSessionRequest,
   type ProbeSessionResponse,
   type SessionConfig,
@@ -19,6 +21,8 @@ import {
   type SshTarget,
   type TelnetSessionConfig,
   type TelnetTarget,
+  type TunnelInfo,
+  type TunnelSpec,
   type UpdateCredentialRequest,
   type UpdateLibraryNodeRequest,
   type VaultStatusResponse,
@@ -172,6 +176,37 @@ export function deleteLibraryNode(id: string): Promise<void> {
   return request<void>(`/library/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
+/* ------------------------------------------------------------------ */
+/* 阶段 5：端口转发与隧道                                               */
+/* ------------------------------------------------------------------ */
+
+export function listTunnels(): Promise<ListTunnelsResponse> {
+  return request<ListTunnelsResponse>('/tunnels')
+}
+
+export function createTunnel(body: CreateTunnelRequest): Promise<{ tunnel: TunnelInfo }> {
+  return request<{ tunnel: TunnelInfo }>('/tunnels', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function startTunnel(id: string): Promise<{ tunnel: TunnelInfo }> {
+  return request<{ tunnel: TunnelInfo }>(`/tunnels/${encodeURIComponent(id)}/start`, {
+    method: 'POST',
+  })
+}
+
+export function stopTunnel(id: string): Promise<{ tunnel: TunnelInfo }> {
+  return request<{ tunnel: TunnelInfo }>(`/tunnels/${encodeURIComponent(id)}/stop`, {
+    method: 'POST',
+  })
+}
+
+export function deleteTunnel(id: string): Promise<void> {
+  return request<void>(`/tunnels/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
 /** 由浏览器当前地址推导 WebSocket 基址，兼容开发态 Vite 代理与生产态同源部署 */
 export function resolveWsBase(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -191,4 +226,6 @@ export type {
   SshTarget,
   TelnetTarget,
   CreateTerminalResponse,
+  TunnelInfo,
+  TunnelSpec,
 }

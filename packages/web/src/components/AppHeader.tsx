@@ -18,9 +18,18 @@ const STATUS_TONE: Record<HealthStatus, DotTone> = {
 interface AppHeaderProps {
   status: HealthStatus
   serverVersion?: string
+  /** 打开隧道面板；未解锁时不传（此时还没有任何会话可承载隧道） */
+  onOpenTunnels?: () => void
+  /** 运行中的隧道数量，用于入口上的徽标 */
+  tunnelCount?: number
 }
 
-export function AppHeader({ status, serverVersion }: AppHeaderProps) {
+export function AppHeader({
+  status,
+  serverVersion,
+  onOpenTunnels,
+  tunnelCount = 0,
+}: AppHeaderProps) {
   const mode = useThemeStore((state) => state.mode)
   const toggleTheme = useThemeStore((state) => state.toggle)
 
@@ -44,6 +53,32 @@ export function AppHeader({ status, serverVersion }: AppHeaderProps) {
       </div>
 
       <div className="flex items-center gap-3">
+        {onOpenTunnels ? (
+          <button
+            type="button"
+            data-testid="open-tunnels"
+            onClick={onOpenTunnels}
+            title="端口转发与隧道（-L / -R / -D）"
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1 text-[11px] text-neutral-600 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            <svg viewBox="0 0 24 24" className="size-3.5" aria-hidden="true">
+              <path
+                d="M4 8h11M15 8l-2.5-2.5M15 8l-2.5 2.5M20 16H9M9 16l2.5-2.5M9 16l2.5 2.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            隧道
+            {tunnelCount > 0 ? (
+              <span className="rounded bg-emerald-100 px-1 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400">
+                {tunnelCount}
+              </span>
+            ) : null}
+          </button>
+        ) : null}
         <StatusDot
           tone={STATUS_TONE[status]}
           label={STATUS_TEXT[status]}

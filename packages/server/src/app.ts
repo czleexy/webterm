@@ -14,6 +14,7 @@ import { vaultRoutes } from './api/rest/vault.js'
 import { credentialRoutes } from './api/rest/credentials.js'
 import { libraryRoutes } from './api/rest/library.js'
 import { sftpRoutes } from './api/rest/sftp.js'
+import { tunnelRoutes } from './api/rest/tunnels.js'
 import { terminalWsRoutes } from './api/ws/terminal.js'
 import { sftpWsRoutes } from './api/ws/sftp.js'
 import { KnownHostsStore } from './ssh/known-hosts.js'
@@ -120,6 +121,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   await app.register(libraryRoutes, { prefix: API_PREFIX })
   await app.register(sessionRoutes, { prefix: API_PREFIX })
   await app.register(terminalRoutes, { prefix: API_PREFIX })
+  await app.register(tunnelRoutes, { prefix: API_PREFIX })
   await app.register(sftpRoutes, { prefix: API_PREFIX })
   await app.register(terminalWsRoutes, { prefix: WS_PATH })
   await app.register(sftpWsRoutes, { prefix: WS_SFTP_PATH })

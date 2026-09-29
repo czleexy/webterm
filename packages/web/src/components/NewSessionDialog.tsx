@@ -338,7 +338,7 @@ export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSe
                 </Field>
                 <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
                   口令仅在本次连接时经本机后端转发，不会写入浏览器存储；
-                  持久化凭据加密存储将在阶段 2 交付。
+                  需要复用可保存到会话库（凭据由主密码保险库以 AES-256-GCM 加密存储）。
                 </p>
               </div>
             ) : (

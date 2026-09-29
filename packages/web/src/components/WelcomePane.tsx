@@ -16,9 +16,9 @@ interface PhaseItem {
 
 const PHASES: PhaseItem[] = [
   { id: 0, name: '工程骨架', scope: 'workspaces / Fastify / Vite / 一键启动', status: 'done' },
-  { id: 1, name: '终端主干打通', scope: 'ssh2 + WebSocket + xterm.js + 背压', status: 'current' },
-  { id: 2, name: '会话管理与持久化', scope: 'SQLite / 主密码 / 密钥认证 / 跳板机', status: 'planned' },
-  { id: 3, name: 'SFTP 文件传输', scope: '双栏浏览 / 队列 / 断点续传', status: 'planned' },
+  { id: 1, name: '终端主干打通', scope: 'ssh2 + WebSocket + xterm.js + 背压', status: 'done' },
+  { id: 2, name: '会话管理与持久化', scope: 'SQLite / 主密码 / 密钥认证 / 跳板机', status: 'done' },
+  { id: 3, name: 'SFTP 文件传输', scope: '双栏浏览 / 队列 / 断点续传 / 远程编辑', status: 'done' },
   { id: 4, name: '端口转发与隧道', scope: '-L / -R / -D SOCKS5', status: 'planned' },
   { id: 5, name: '自动化与批量运维', scope: '触发器 / 脚本沙箱 / 批量执行', status: 'planned' },
   { id: 6, name: '日志与审计', scope: '会话日志 / 归档 / 审计表', status: 'planned' },
@@ -95,8 +95,8 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
       </h1>
       <p className="mt-1.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
         后端跑在本机，负责建立 SSH 连接与协议处理；浏览器只做渲染与交互。
-        当前处于<b className="font-medium text-neutral-700 dark:text-neutral-300">阶段 1（终端主干）</b>
-        ，多标签终端、PTY 尺寸同步、背压保护与算法自动降级均已可用。
+        <b className="font-medium text-neutral-700 dark:text-neutral-300">已完成阶段 0 ~ 3</b>
+        ：多标签终端、会话库与主密码保险库、SFTP 双栏文件传输均已可用，下一站是端口转发与隧道。
       </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-2">

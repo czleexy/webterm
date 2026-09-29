@@ -1,13 +1,13 @@
 # WebTerm
 
-基于 Node.js 的浏览器 SSH 客户端，对标 SecureCRT / Xshell。
+基于 Node.js 的浏览器 SSH / Telnet 客户端，对标 SecureCRT / Xshell。
 
-服务跑在本机负责 SSH 协议栈与连接管理，浏览器只负责渲染与交互。免安装、跨平台，配置与会话集中在一处管理。
+服务跑在本机负责协议栈与连接管理，浏览器只负责渲染与交互。免安装、跨平台，配置与会话集中在一处管理。
 
-> 当前进度：**阶段 3（SFTP 文件传输）已交付** —— 本地 / 远端双栏浏览、传输队列（并发 / 断点续传 / 暂停取消）、拖拽互传、浏览器上传下载、文本预览与远程编辑（带 mtime 冲突检测）。
-> 前一阶段：阶段 2（会话管理与持久化）—— 会话库（分组 / 树）、主密码保险库（AES-256-GCM 加密凭据）、密钥登录、跳板机 ProxyJump。
-> 详细设计见 [`docs/01-功能框架与需求说明书.md`](docs/01-功能框架与需求说明书.md) 与 [`docs/02-实现计划.md`](docs/02-实现计划.md)。
-> 界面截图见 [`docs/screenshots/`](docs/screenshots/)。
+> 当前进度：**阶段 4（Telnet 明文终端）已交付** —— 端口 23、选项协商（TERMINAL-TYPE / NAWS）、本地回显兜底、IAC 转义，与 SSH 共用同一套终端与标签体系。
+> 前一阶段：阶段 3（SFTP 文件传输）—— 双栏浏览、传输队列（并发 / 断点续传 / 暂停取消）、拖拽互传、浏览器上传下载、文本预览与远程编辑（带 mtime 冲突检测）。
+> 详细设计见 [`docs/01-功能框架与需求说明书.md`](docs/01-功能框架与需求说明书.md) 与 [`docs/02-实现计划.md`](docs/02-实现计划.md)；
+> 测试方法见 [`docs/03-测试指南.md`](docs/03-测试指南.md)；界面截图见 [`docs/screenshots/`](docs/screenshots/)。
 
 ---
 
@@ -15,7 +15,7 @@
 
 | 项 | 要求 |
 | --- | --- |
-| Node.js | **≥ 22.12.0**（Vite 7 与 better-sqlite3 13 的下限） |
+| Node.js | **≥ 22.12.0**（Vite 8 与 better-sqlite3 13 的下限） |
 | 包管理器 | npm 10+（使用 npm workspaces，无需 pnpm/yarn） |
 | 浏览器 | Chrome / Edge 110+、Firefox 115+、Safari 16+ |
 
@@ -37,7 +37,9 @@ npm run dev
 
 浏览器打开 <http://localhost:5173>。
 
-点击「新建 SSH 连接」填入主机信息即可建立终端。可先点「测试连接」确认连通性与认证，并查看实际协商出的算法与主机密钥指纹。
+点击「新建连接」，先选协议（**SSH** / **Telnet**）再填主机信息即可建立终端。可先点「测试连接」确认连通性：SSH 会回报协商算法与主机密钥指纹，Telnet 会回报设备欢迎语。
+
+> 没有可用远端主机时，用内置的 mock 服务端即可完整体验：`node packages/server/dev/mock-ssh-server.mjs`（2222）或 `node packages/server/dev/mock-telnet-server.mjs`（2323），详见「本地联调」一节。
 
 ---
 
@@ -73,6 +75,25 @@ npm run dev
 
 ---
 
+## 阶段 4 已交付能力（Telnet，端口 23）
+
+| 能力 | 说明 |
+| --- | --- |
+| 协议选择 | 「新建连接」与「会话编辑」都有 SSH / Telnet 切换；切协议时端口在 22 / 23 间跟随（手改过的端口不覆盖） |
+| 选项协商 | 完整状态机处理 `DO`/`DONT`/`WILL`/`WONT` 与子协商；对端拒绝后不再重复请求，不打扰老设备 |
+| TERMINAL-TYPE | 把会话的 `TERM` 上报给设备，远端全屏程序（`top` / `vi`）据此排版 |
+| NAWS 窗口尺寸 | 拖拽窗口 / 切换标签时把新尺寸上报给设备 |
+| 本地回显兜底 | 设备不声明 `WILL ECHO` 时由本端补回显（含退格 `\b \b`、不越界），解决「打字看不见」这个 Telnet 最常见的观感问题；设备声明回显时绝不重复回显 |
+| IAC 转义 | 收发两侧都把 `0xFF` 写成 `FF FF`，裸 0xFF 不会被当成命令吃掉后续字节 |
+| 明文风险提示 | 对话框常驻警示，且**采集不到任何凭据** —— 口令在终端里交互输入，不进配置、不落盘 |
+| 能力裁剪 | Telnet 没有认证阶段与文件子系统：目标里不允许出现凭据、没有跳板链、不支持算法档案；标签栏不提供 SFTP 入口，服务端对 Telnet 会话开 SFTP 直接 400 |
+| 探测 | 「测试连接」对 Telnet 只回答「TCP 通不通 + 对端说不说话」，并把设备欢迎语带回来 |
+| 零新增依赖 | 用 Node 内置 `net` 实现传输层，未引入第三方 Telnet 库 |
+
+> **安全边界**：Telnet 是明文协议，口令与全部会话内容都会以明文经过网络。请仅在受信网络中使用，条件允许时优先改用 SSH。
+
+---
+
 ## 可用脚本
 
 在**根目录**执行：
@@ -100,9 +121,10 @@ webterm/
 ├─ docs/                     设计与计划文档（含界面截图）
 ├─ packages/
 │  ├─ shared/                前后端共享常量与类型（必须先构建）
-│  │  └─ src/{constants,api,ws}.ts
+│  │  └─ src/{constants,api,ws,sftp}.ts
 │  ├─ server/                Fastify 服务端
-│  │  ├─ dev/mock-ssh-server.mjs   开发用 SSH 测试服务端
+│  │  ├─ dev/mock-ssh-server.mjs     开发用 SSH 测试服务端（含 SFTP 子系统）
+│  │  ├─ dev/mock-telnet-server.mjs  开发用 Telnet 测试设备（选项协商 / NAWS / 回显开关）
 │  │  └─ src/
 │  │     ├─ index.ts         进程入口（加载配置 → 建目录 → 监听）
 │  │     ├─ app.ts           Fastify 实例装配 + 静态托管 + 404 处理
@@ -110,17 +132,20 @@ webterm/
 │  │     ├─ db/              SQLite 打开与迁移、会话库 DAO
 │  │     ├─ security/        保险库（主密码 KDF + AES-GCM）、凭据存取
 │  │     ├─ ssh/             算法档案 / 连接建立 / 跳板链 / 主机密钥 / 错误分类
-│  │     ├─ terminal/        终端会话 / 会话注册表 / 编码桥
+│  │     ├─ telnet/          协商状态机 / 传输层 / 错误分类（明文终端协议栈）
+│  │     ├─ sftp/            SFTP 会话 / 传输队列 / 本地路径沙箱
+│  │     ├─ terminal/        终端会话（双传输：SSH / Telnet） / 会话注册表 / 编码桥
 │  │     └─ api/
-│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals / vault / credentials / library）
+│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals / vault / credentials / library / sftp）
 │  │        ├─ resolver.ts   会话记录 → 明文连接参数
-│  │        └─ ws/           终端 WebSocket 端点
+│  │        └─ ws/           终端与 SFTP WebSocket 端点
 │  └─ web/                   React 前端
 │     └─ src/
 │        ├─ api/             REST 请求封装
 │        ├─ components/      UI 组件（门禁 / 弹窗 / 标签栏 / 会话库侧栏）
 │        ├─ terminal/        xterm 封装 / 连接 Hook / 配色
-│        ├─ store/           标签页 / 保险库 / 会话库状态（Zustand）
+│        ├─ sftp/            SFTP 双栏工作区 / 文件列表 / 传输抽屉
+│        ├─ store/           标签页 / 保险库 / 会话库 / SFTP 状态（Zustand）
 │        ├─ theme/           主题状态（Zustand persist）
 │        └─ utils/
 └─ data/                     运行时数据（已被 git 忽略）
@@ -165,17 +190,39 @@ webterm/
 
 ### `GET /api/capabilities`
 
-返回 ssh2 版本、算法档案（modern / legacy 的完整算法清单）、支持的编码与背压水位。前端欢迎页据此展示，排障时可直接查看。
+返回 ssh2 版本、算法档案（modern / legacy 的完整算法清单）、支持的编码、**支持的协议（`ssh` / `telnet`）**与背压水位。前端欢迎页据此展示，排障时可直接查看。
 
 ### `POST /api/sessions/probe`
 
-只做「TCP + 握手 + 认证」，不开终端会话。返回协商算法、主机密钥指纹与告警列表 —— 用于「测试连接」，能区分「连不上」「认证失败」「认证通过但拒绝会话」三类故障。
+只做「TCP + 握手 + 认证」，不开终端会话。**按协议分流**：
+
+- **SSH**：返回协商算法、主机密钥指纹与告警列表 —— 能区分「连不上」「认证失败」「认证通过但拒绝会话」三类故障。
+- **Telnet**：没有认证阶段，因此只验证「TCP 通不通」与「对端说不说话」，并带回设备欢迎语（`banner`），同时附一条明文风险告警。响应里不会出现 `negotiation` / `hostKeyFingerprint`。
+
+请求体为 `{ protocol?, target?, sessionId?, legacyCompat? }`，`protocol` 缺省为 `ssh`。
 
 ### `POST /api/terminals` / `GET /api/terminals` / `DELETE /api/terminals/:id`
 
-创建（此时已建立真实 SSH 连接，失败返回标准 HTTP 状态码 + 错误码）、列出、关闭终端。创建响应含一次性 `attachToken`。
+创建（此时已建立真实连接，失败返回标准 HTTP 状态码 + 错误码）、列出、关闭终端。创建响应含一次性 `attachToken`。
 
 请求体二选一：`{ config }`（快速连接，前端直传）或 `{ sessionId }`（引用会话库，服务端负责解密凭据并组装跳板链）。
+
+`config` 是**按 `protocol` 判别的联合类型**：
+
+```jsonc
+// SSH：需要用户名 + 凭据，可用 legacy 算法档案与跳板链
+{ "protocol": "ssh",
+  "target": { "host": "10.0.0.1", "port": 22, "username": "ops", "authMethod": "password", "password": "…" },
+  "terminal": { "cols": 120, "rows": 30, "encoding": "utf8", "term": "xterm-256color" },
+  "legacyCompat": "auto" }
+
+// Telnet：只有主机与端口 —— 协议没有认证阶段，口令在终端里交互输入，不进配置
+{ "protocol": "telnet",
+  "target": { "host": "10.0.0.9", "port": 23 },
+  "terminal": { "cols": 120, "rows": 30, "encoding": "gbk", "term": "xterm-256color" } }
+```
+
+`GET /api/terminals` 的列表项带 `protocol` 字段；Telnet 终端的 `username` 恒为空串。对 Telnet 终端开 SFTP 返回 **400 `INVALID_CONFIG`**（Telnet 没有文件子系统）。
 
 ### 保险库 / 凭据 / 会话库（阶段 2）
 
@@ -189,6 +236,8 @@ webterm/
 | `POST/PATCH/DELETE /api/credentials[/:id]` | 增改删；删除时若仍被会话引用返回 409 `CREDENTIAL_IN_USE` |
 | `GET /api/library` | 返回扁平节点列表（含 `parentId` / `sortOrder` / `session`），前端自行组树 |
 | `POST/PATCH/DELETE /api/library[/:id]` | 建节点 / 改名称与归属与会话配置 / 删除（分组递归）；循环引用返回 409 `CYCLE` |
+
+会话记录（`session`）同样按协议区分：SSH 记录必须带 `username` 与 `credentialId`；**Telnet 记录不允许出现 `credentialId`，跳板链也必须为空**，否则 400 `VALIDATION_FAILED`（避免出现「看着像配了、实际不生效」的配置）。
 
 需要解锁的接口在锁定态返回 **423 Locked** + `error: "LOCKED"`。
 
@@ -218,13 +267,17 @@ webterm/
 
 **二进制帧** = 终端原始字节流（输入 / 输出）；**文本帧** = JSON 控制消息（`ready` / `resize` / `exit` / `error` / `flow` / `ack`）。协议定义见 `packages/shared/src/ws.ts`。
 
+`ready` 消息里的 `info` 带 `protocol` 字段；Telnet 会话额外带 `telnetOptions`（远端是否回显、SGA / TERMINAL-TYPE / NAWS 的协商结果、双方启用的选项名），SSH 专有字段统一填 `—`。前端据此在终端工具栏的协议徽标上给出排障提示。
+
 未匹配到路由的 `/api/*` 请求统一返回 `{ "error": "NOT_FOUND", "message": "..." }`。
 
 ---
 
-## 本地联调：开发用 SSH 测试服务端
+## 本地联调：开发用测试服务端
 
-没有可用远端主机时，可以起一个内置的测试服务端做端到端验证：
+没有可用远端主机时，可以用内置的测试服务端做端到端验证。
+
+### SSH（+ SFTP）
 
 ```bash
 node packages/server/dev/mock-ssh-server.mjs
@@ -265,6 +318,22 @@ MOCK_PORT=2224 node packages/server/dev/mock-ssh-server.mjs   # 目标 C
 printf '<公钥的 base64 blob>\n' | MOCK_AUTH=publickey MOCK_PORT=2225 node packages/server/dev/mock-ssh-server.mjs
 ```
 
+### Telnet
+
+```bash
+node packages/server/dev/mock-telnet-server.mjs
+# 监听 127.0.0.1:2323，无账号（Telnet 本身没有认证阶段）
+```
+
+支持的指令：`help` / `ping` / `echo <文本>` / `size`（回显最近一次 NAWS 尺寸）/ `ttype`（回显最近一次 TERMINAL-TYPE）/ `iac`（故意输出裸 `0xFF` 验证转义）/ `big <KB>`（验证背压）/ `quit`。
+
+| 变量 | 用途 |
+| --- | --- |
+| `MOCK_PORT` | 监听端口，默认 2323 |
+| `MOCK_TELNET_ECHO=0` | 不声明也不执行回显，验证**本端本地回显兜底** |
+| `MOCK_TELNET_NO_NEGOTIATION=1` | 完全不做选项协商，模拟极简实现 |
+| `MOCK_TELNET_NAME` | 设备名（同时作为提示符前缀），默认 `MockTelnet` |
+
 ---
 
 ## 开发约定
@@ -272,8 +341,9 @@ printf '<公钥的 base64 blob>\n' | MOCK_AUTH=publickey MOCK_PORT=2225 node pac
 - **`packages/shared` 必须先构建**才能被 server / web 引用。`predev` / `prebuild` / `pretypecheck` 已自动处理，无需手动执行。
 - 改动 `packages/shared` 后需重新构建（或另开终端跑 `npm run dev -w @webterm/shared` 开启 watch）。
 - **终端数据传输一律使用 WebSocket 二进制帧**，只有控制类消息用 JSON 文本帧。
-- 凭据（密码、私钥口令）**任何时候都不明文落盘**。
+- 凭据（密码、私钥口令）**任何时候都不明文落盘**；**Telnet 会话不进任何凭据** —— 口令由用户在终端里交互输入。
 - 服务默认只监听 `127.0.0.1`，开放到局域网需显式配置。
+- 会话配置是**按 `protocol` 判别的联合类型**，SSH / Telnet 的差异止步于类型与 UI 层，`TerminalSession` 之上（编码桥、背压、标签生命周期）完全共用一套实现。新增协议时按这个边界扩展。
 
 ---
 
@@ -285,4 +355,17 @@ printf '<公钥的 base64 blob>\n' | MOCK_AUTH=publickey MOCK_PORT=2225 node pac
 | 1 终端主干打通 | ✅ 已完成 |
 | 2 会话管理与持久化 | ✅ 已完成 |
 | 3 SFTP 文件传输 | ✅ 已完成 |
-| 4–8 | 待开发 |
+| 4 Telnet 明文终端（插入交付） | ✅ 已完成 |
+| 5 ~ 9（端口转发 / 自动化 / 日志审计 / 体验打磨 / 插件打包） | 待开发 |
+
+### 自动化端到端验证
+
+| 套件 | 脚本 | 结果 |
+| --- | --- | --- |
+| 阶段 2 服务端 | `data/tmp/e2e-phase2.mjs` | 35/35 |
+| 阶段 3 服务端 | `data/tmp/e2e-phase3.mjs` | 75/75 |
+| 阶段 3 浏览器 | `data/tmp/e2e-browser-p3.mjs` | 55/55 |
+| 阶段 4 Telnet 服务端 | `data/tmp/e2e-telnet.mjs` | 53/53 |
+| 阶段 4 Telnet 浏览器 | `data/tmp/e2e-browser-telnet.mjs` | 80/80 |
+
+运行方式（含端口分配与 `NODE_PATH` 等前置条件）见 [`docs/03-测试指南.md`](docs/03-测试指南.md)。

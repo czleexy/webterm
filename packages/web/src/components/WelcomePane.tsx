@@ -96,9 +96,10 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
       </h1>
       <p className="mt-1.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
         后端跑在本机，负责建立连接与协议处理；浏览器只做渲染与交互。
-        <b className="font-medium text-neutral-700 dark:text-neutral-300">已完成阶段 0 ~ 5</b>
-        ：多标签终端、会话库与主密码保险库、SFTP 双栏文件传输、SSH / Telnet 双协议支持，
-        以及端口转发（-L / -R / -D SOCKS5）均已可用，下一站是自动化与批量运维。
+        <b className="font-medium text-neutral-700 dark:text-neutral-300">已完成阶段 0 ~ 6</b>
+        ：多标签终端、会话库与主密码保险库、SFTP 双栏文件传输、SSH / Telnet 双协议支持、
+        端口转发（-L / -R / -D SOCKS5），以及自动化与批量运维
+        （触发器、按钮栏、沙箱脚本、同步输入、批量执行）。
       </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -111,7 +112,8 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
           新建连接
         </button>
         <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
-          支持 SSH 与 Telnet（端口 23）· 快捷键：Alt+T 新建 · Alt+W 关闭 · Alt+↑/↓ 切换标签
+          支持 SSH 与 Telnet（端口 23）· 快捷键：Alt+T 新建 · Alt+W 关闭 · Alt+↑/↓ 切换标签 ·
+          Alt+B 开启/立即停止同步输入
         </span>
       </div>
 

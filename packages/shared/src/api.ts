@@ -3,10 +3,12 @@
  * 阶段 1 新增：连接探测与终端会话创建。
  * 阶段 4 新增：Telnet（按 protocol 判别的会话配置）。
  * 阶段 5 新增：端口转发与隧道（见 tunnel.ts）。
+ * 阶段 6 新增：自动化与批量运维（见 automation.ts）。
  */
 import type { ConnectionProtocol } from './constants.js'
 import { DEFAULT_PORTS } from './constants.js'
 import type { TunnelSpec, TunnelType } from './tunnel.js'
+import type { AutomationCapabilities } from './automation.js'
 
 /** 统一错误响应体 */
 export interface ApiError {
@@ -202,6 +204,8 @@ export interface CreateTerminalResponse {
    * 例如「端口 13306 已被占用」—— 会话本身是连上了的，不该让用户以为连接失败。
    */
   tunnelWarnings?: string[]
+  /** 随会话自动运行的脚本 id 列表（阶段 6），供前端展示与排障 */
+  startupScripts?: string[]
 }
 
 /** 协商摘要（与 shared/ws.ts 的 TerminalNegotiationInfo 保持一致但更精简） */
@@ -356,6 +360,13 @@ export interface SessionRecord {
    * 用户下次连接时仍然会按原样尝试，而不是被上一次的偶然失败永久改坏。
    */
   tunnels?: TunnelSpec[]
+  /**
+   * 仅 SSH 有意义：会话建立后自动运行的脚本（阶段 6），按数组顺序串行执行。
+   *
+   * 与 tunnels 同一取舍：只存脚本 id，脚本内容保存在 scripts 表里，
+   * 改一处即对所有引用它的会话生效。
+   */
+  startupScripts?: string[]
 }
 
 export type SupportedEncodingLiteral = 'utf8' | 'gbk' | 'gb18030' | 'big5' | 'latin1'
@@ -413,6 +424,8 @@ export interface CapabilitiesResponse {
   supportedTunnelTypes: TunnelType[]
   /** 单个会话允许的隧道数量上限 */
   maxTunnelsPerSession: number
+  /** 自动化能力（阶段 6）：触发器 / 宏 / 脚本 / 批量的各项上限 */
+  automation: AutomationCapabilities
   /** 单条终端输出的背压水位（字节） */
   backpressureHighWaterMark: number
   backpressureLowWaterMark: number

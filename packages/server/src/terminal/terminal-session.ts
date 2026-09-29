@@ -118,6 +118,16 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
   private pending: Buffer[] = []
   private pendingBytes = 0
 
+  /**
+   * 输出观察者（阶段 6）：触发器与脚本都挂在这里。
+   *
+   * 观察者拿到的是**解码后的文本**，因此需要一把增量解码器 —— 直接把每个
+   * chunk 各自 `toString('utf8')` 会把跨 chunk 的多字节字符劈成乱码，
+   * 而「提示串被劈开导致匹配落空」正是触发器最难排查的一类问题。
+   */
+  private readonly outputObservers = new Set<(text: string) => void>()
+  private readonly outputDecoder = new TextDecoder('utf-8')
+
   private cols: number
   private rows: number
 
@@ -249,7 +259,7 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     this.serverIdent = transport.serverIdent
 
     transport.on('data', (chunk: Buffer) => {
-      this.deliver(this.encoding.toClient(chunk))
+      this.ingestRemote(chunk)
     })
 
     // 协商结果会随后续往返变化（例如设备稍后才声明 WILL ECHO），
@@ -445,12 +455,12 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
 
   private attachStreamHandlers(stream: ClientChannel): void {
     stream.on('data', (chunk: Buffer) => {
-      this.deliver(this.encoding.toClient(chunk))
+      this.ingestRemote(chunk)
     })
 
     // shell 场景下 stderr 与 stdout 共用同一终端，直接合并输出
     stream.stderr.on('data', (chunk: Buffer) => {
-      this.deliver(this.encoding.toClient(chunk))
+      this.ingestRemote(chunk)
     })
 
     stream.on('exit', (code: number | null, signal: string | null) => {
@@ -596,6 +606,65 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
   /* ------------------------------------------------------------------ */
   /* 输出投递与背压                                                       */
   /* ------------------------------------------------------------------ */
+
+  /**
+   * 远端输出的唯一入口：先通知观察者（触发器 / 脚本），再投递给渲染端。
+   *
+   * 顺序有意为之 —— 触发器要在「用户看到这一行」之前就完成匹配与应答，
+   * 否则遇到 `(yes/no)?` 这类提示，用户会先看到光标停住再看到 `yes` 被补上。
+   *
+   * 观察者抛错只记日志：一条写坏的正则不该让整个终端停止输出。
+   */
+  private ingestRemote(chunk: Buffer): void {
+    const text = this.encoding.toClient(chunk)
+
+    if (this.outputObservers.size > 0) {
+      const decoded = this.outputDecoder.decode(text, { stream: true })
+      if (decoded.length > 0) {
+        for (const observer of this.outputObservers) {
+          try {
+            observer(decoded)
+          } catch (err) {
+            this.logger.warn(
+              { terminalId: this.id, err: String(err) },
+              '输出观察者处理失败，已忽略',
+            )
+          }
+        }
+      }
+    }
+
+    this.deliver(text)
+  }
+
+  /**
+   * 订阅解码后的远端输出（阶段 6）。返回退订函数。
+   * 触发器引擎与脚本的 TerminalTap 都通过它工作。
+   */
+  subscribeOutput(observer: (text: string) => void): () => void {
+    this.outputObservers.add(observer)
+    return () => {
+      this.outputObservers.delete(observer)
+    }
+  }
+
+  /**
+   * 向远端注入输入（自动应答 / 宏 / 脚本）。
+   *
+   * 刻意复用 handleInput 而不是直接写 stream：编码转换、帧长上限、
+   * Telnet 的 0xFF 转义与本地回显补全都在这条路径上，另开一条路必然漏掉其中几项。
+   * 返回 false 表示会话当前不可写。
+   */
+  sendToRemote(text: string): boolean {
+    if (this.state !== 'ready' || !this.hasTransport) return false
+    this.handleInput(Buffer.from(text, 'utf8'))
+    return true
+  }
+
+  /** 向当前附加的渲染端推一条控制消息（自动化事件用；无客户端时静默丢弃） */
+  postControl(msg: ServerControlMessage): void {
+    this.sendControl(msg)
+  }
 
   private deliver(buf: Buffer): void {
     if (buf.length === 0 || this.state === 'closed') return
@@ -826,6 +895,8 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     this.ws = undefined
     this.pending = []
     this.pendingBytes = 0
+    // 观察者（触发器 / 脚本）随会话一起消失：留着它们只会继续吃内存
+    this.outputObservers.clear()
 
     this.logger.info({ terminalId: this.id, reason }, '终端会话已关闭')
     this.emit('closed', reason)

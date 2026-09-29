@@ -223,6 +223,12 @@ export class LibraryStore {
           'Telnet 没有可承载转发通道的协议层，不支持端口转发',
         )
       }
+      if ((session.startupScripts ?? []).length > 0) {
+        throw new LibraryError(
+          'CREDENTIAL_NOT_APPLICABLE',
+          'Telnet 会话不支持登录脚本（脚本 API 依赖 SSH 会话）',
+        )
+      }
       return
     }
 

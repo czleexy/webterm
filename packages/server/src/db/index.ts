@@ -40,6 +40,48 @@ export interface LibraryRow {
   updated_at: string
 }
 
+export interface TriggerRow {
+  id: string
+  name: string
+  /** SQLite 无布尔：0 / 1 */
+  enabled: number
+  /** global | session */
+  scope: string
+  /** scope = session 时指向 library(id) */
+  session_id: string | null
+  pattern: string
+  /** regex | text */
+  match_mode: string
+  flags: string
+  actions_json: string
+  cooldown_ms: number
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface MacroRow {
+  id: string
+  name: string
+  description: string
+  steps_json: string
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ScriptRow {
+  id: string
+  name: string
+  description: string
+  code: string
+  timeout_ms: number
+  /** 0 / 1 */
+  run_on_connect: number
+  created_at: string
+  updated_at: string
+}
+
 const MIGRATIONS: string[] = [
   // v1：初始表结构
   `
@@ -69,6 +111,53 @@ const MIGRATIONS: string[] = [
   );
 
   CREATE INDEX idx_library_parent ON library(parent_id, sort_order);
+  `,
+  // v2：阶段 6 —— 自动化（触发器 / 按钮栏宏 / 脚本）
+  //
+  // 三张表都只存「定义」：命中次数、最近触发时间、运行日志都属于进程内存里的
+  // 运行时状态，写回库反而会让「上次碰巧失败」变成永久配置。
+  //
+  // triggers.session_id 引用 library(id) 并级联删除：会话记录没了，
+  // 只对它生效的规则也就失去了锚点，留着只会在界面上显示一堆孤儿规则。
+  `
+  CREATE TABLE triggers (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    scope        TEXT NOT NULL CHECK (scope IN ('global', 'session')),
+    session_id   TEXT REFERENCES library(id) ON DELETE CASCADE,
+    pattern      TEXT NOT NULL,
+    match_mode   TEXT NOT NULL DEFAULT 'regex' CHECK (match_mode IN ('regex', 'text')),
+    flags        TEXT NOT NULL DEFAULT '',
+    actions_json TEXT NOT NULL,
+    cooldown_ms  INTEGER NOT NULL DEFAULT 500,
+    sort_order   INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+  );
+
+  CREATE INDEX idx_triggers_scope ON triggers(scope, session_id, sort_order);
+
+  CREATE TABLE macros (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    steps_json  TEXT NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+
+  CREATE TABLE scripts (
+    id             TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    description    TEXT NOT NULL DEFAULT '',
+    code           TEXT NOT NULL,
+    timeout_ms     INTEGER NOT NULL DEFAULT 30000,
+    run_on_connect INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+  );
   `,
 ]
 

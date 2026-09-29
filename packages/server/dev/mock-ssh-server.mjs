@@ -11,16 +11,28 @@
  *   utf8        输出中文 UTF-8 文本（验证编码直通）
  *   gbk         输出 GBK 编码的中文（配合 encoding=gbk 验证服务端转码）
  *   sleep <秒>  静默 N 秒
+ *   confirm     输出不换行的 `(yes/no)?` 提示并等待确认（验证触发器自动应答）
+ *   pager <页数> 分页输出，每页以 `--More--` 结束并等一个字符（验证分页自动翻页）
+ *   errors      输出若干含 error/failed 与数字错误码的行（验证高亮与捕获组）
  *   exit        结束会话
  *
  * 环境变量：
  *   MOCK_PORT    监听端口，默认 2222
  *   MOCK_USER    用户名，默认 demo
  *   MOCK_PASS    口令，默认 demo
+ *   MOCK_NAME    主机名（exec 的 hostname 返回它），默认 mock-<端口>
  *   MOCK_LEGACY  设为 1 时只提供 legacy 算法，用于验证客户端的自动降级逻辑
  *   MOCK_AUTH    password（默认）| publickey，验证密钥认证链路
  *   MOCK_SFTP_ROOT  SFTP 子系统的根目录（默认 data/tmp/mock-sftp-root）
  *   MOCK_NO_SFTP  设为 1 时拒绝 sftp 子系统，用于验证客户端对「不支持 SFTP」的提示
+ *
+ * exec 通道（阶段 6 批量执行验证用）：不调用系统 shell，按命令内容返回预置结果 ——
+ *   df / hostname / whoami  -> 各自的典型输出，退出码 0
+ *   big <KB>                -> 输出 N KB 文本，用于验证输出截断（上限 256 KB）
+ *   含 fail|error|boom      -> stderr 写一行，退出码 3
+ *   exit <N>                -> 退出码 N
+ *   sleep <秒>              -> 等待后退出码 0
+ *   其余                    -> 回显一行，退出码 0
  *
  * 跳板链支持：本服务端接受 direct-tcpip 通道请求（即 ssh -L/-W 的服务端行为），
  * 因此把多个实例串联即可验证 ProxyJump：A(2222) → B(2223) → C(2224)。
@@ -58,6 +70,8 @@ const USER = process.env.MOCK_USER || 'demo'
 const PASS = process.env.MOCK_PASS || 'demo'
 const LEGACY_ONLY = process.env.MOCK_LEGACY === '1'
 const AUTH_MODE = process.env.MOCK_AUTH || 'password'
+/** exec 的 hostname 返回值：批量执行验证时用来区分「哪台机器」 */
+const MOCK_NAME = process.env.MOCK_NAME || `mock-${PORT}`
 
 /** 远程转发（-R）时由本服务端建立的监听器；key = `bindAddr:port` */
 const remoteListeners = new Map()
@@ -278,9 +292,7 @@ const server = new Server(
           if (!authed) return
           console.log(`[mock-ssh] exec: ${info.command}`)
           const stream = acceptExec()
-          stream.write(`exec 命令执行结果：${info.command}\r\n`)
-          stream.exit(0)
-          stream.end()
+          runExecCommand(stream, info.command)
         })
 
         // SFTP 子系统：把请求落到 SFTP_ROOT 下的临时目录
@@ -345,8 +357,43 @@ function decodeLine(bytes) {
 function attachShell(stream, pty) {
   let lineBytes = []
   let quitting = false
+  /**
+   * 交互子模式。confirm / pager 这类指令在「等一个回答」期间要独占后续输入，
+   * 否则用户敲的 `y` 会被当成下一条 shell 指令。
+   * @type {null | { kind: 'confirm' | 'pager', onAnswer?: (line: string) => void, onKey?: () => void, onAbort?: () => void }}
+   */
+  let subMode = null
 
   const prompt = () => w(stream, '\r\n$ ')
+
+  /** 擦掉行缓冲里最后一个字符（含多字节宽字符），两侧共用 */
+  const eraseLastByte = () => {
+    if (lineBytes.length === 0) return
+    const removed = lineBytes.pop()
+    // 按 UTF-8 前导字节判断该字符占几字节，退格时一并抹掉，避免留下半个汉字
+    const width = removed >= 0xf0 ? 4 : removed >= 0xe0 ? 3 : removed >= 0xc0 ? 2 : 1
+    for (let i = 1; i < width && lineBytes.length > 0; i += 1) lineBytes.pop()
+    // 用「退格+空格+退格」擦除整字符宽度（终端按显示宽度计算，汉字占 2 列）
+    stream.write('\b \b'.repeat(removed >= 0xc0 ? 2 : 1))
+  }
+
+  /** 可打印 ASCII 与多字节字符的原始字节：回显并入行缓冲 */
+  const echoByte = (byte) => {
+    if ((byte >= 0x20 && byte < 0x7f) || byte >= 0x80) {
+      lineBytes.push(byte)
+      stream.write(Buffer.from([byte]))
+    }
+    // 其余（方向键等转义序列）忽略
+  }
+
+  const shellCtl = {
+    setSubMode: (mode) => {
+      subMode = mode
+    },
+    prompt,
+    write: (text) => stream.write(text),
+    line: (text) => w(stream, text),
+  }
 
   w(
     stream,
@@ -358,6 +405,42 @@ function attachShell(stream, pty) {
 
   stream.on('data', (chunk) => {
     for (const byte of chunk) {
+      /* ---------- 交互子模式：输入先交给它 ---------- */
+      if (subMode) {
+        // Ctrl+C 随时中断子模式
+        if (byte === 0x03) {
+          const mode = subMode
+          subMode = null
+          lineBytes = []
+          stream.write('^C')
+          mode.onAbort?.()
+          prompt()
+          continue
+        }
+        // pager：任意一键翻页
+        if (subMode.kind === 'pager') {
+          subMode.onKey?.()
+          continue
+        }
+        // confirm：按行收集回答
+        if (byte === 0x0d || byte === 0x0a) {
+          stream.write('\r\n')
+          const answer = decodeLine(lineBytes).trim()
+          lineBytes = []
+          const mode = subMode
+          subMode = null
+          mode.onAnswer?.(answer)
+          continue
+        }
+        if (byte === 0x7f || byte === 0x08) {
+          eraseLastByte()
+          continue
+        }
+        echoByte(byte)
+        continue
+      }
+
+      /* ---------- 常规行编辑 ---------- */
       // Ctrl+C
       if (byte === 0x03) {
         lineBytes = []
@@ -374,15 +457,7 @@ function attachShell(stream, pty) {
       }
       // 退格 / DEL
       if (byte === 0x7f || byte === 0x08) {
-        if (lineBytes.length > 0) {
-          const removed = lineBytes.pop()
-          // 按 UTF-8 前导字节判断该字符占几字节，退格时一并抹掉，避免留下半个汉字
-          const width = removed >= 0xf0 ? 4 : removed >= 0xe0 ? 3 : removed >= 0xc0 ? 2 : 1
-          for (let i = 1; i < width && lineBytes.length > 0; i += 1) lineBytes.pop()
-          // 用「退格+空格+退格」擦除整字符宽度（终端按显示宽度计算，汉字占 2 列）
-          const erase = '\b \b'.repeat(removed >= 0xc0 ? 2 : 1)
-          stream.write(erase)
-        }
+        eraseLastByte()
         continue
       }
       // 回车
@@ -397,17 +472,12 @@ function attachShell(stream, pty) {
         // 指令返回 'no-prompt' 表示它会自行输出提示符或已结束会话
         const outcome = handleCommand(stream, cmd, pty, () => {
           quitting = true
-        })
+        }, shellCtl)
         if (quitting) return
         if (outcome !== 'no-prompt') prompt()
         continue
       }
-      // 可打印 ASCII 与多字节字符的原始字节：回显并入行缓冲
-      if ((byte >= 0x20 && byte < 0x7f) || byte >= 0x80) {
-        lineBytes.push(byte)
-        stream.write(Buffer.from([byte]))
-      }
-      // 其余（方向键等转义序列）忽略
+      echoByte(byte)
     }
   })
 
@@ -421,7 +491,8 @@ function attachShell(stream, pty) {
  * 执行一条指令。
  * @returns 'prompt' 表示由调用方输出提示符；'no-prompt' 表示本指令自行处理提示符或已结束会话
  */
-function handleCommand(stream, cmd, pty, requestQuit) {  const [name, ...rest] = cmd.split(/\s+/)
+function handleCommand(stream, cmd, pty, requestQuit, shellCtl) {
+  const [name, ...rest] = cmd.split(/\s+/)
   const arg = rest.join(' ')
 
   switch (name) {
@@ -436,6 +507,9 @@ function handleCommand(stream, cmd, pty, requestQuit) {  const [name, ...rest] =
           '  utf8           输出中文 UTF-8 文本\r\n' +
           '  gbk            输出 GBK 编码的中文（需把终端编码设为 gbk）\r\n' +
           '  sleep <秒>     静默指定秒数\r\n' +
+          '  confirm        出不换行的 (yes/no)? 提示并等待确认\r\n' +
+          '  pager <页数>   分页输出，每页以 --More-- 结束\r\n' +
+          '  errors         输出含 error/failed 与错误码的行\r\n' +
           '  exit           结束会话\r\n',
       )
       break
@@ -508,6 +582,77 @@ function handleCommand(stream, cmd, pty, requestQuit) {  const [name, ...rest] =
       return 'no-prompt'
     }
 
+    case 'confirm': {
+      shellCtl.line('警告：该操作会清空设备上的全部配置。\n')
+      // 关键：这里**故意不输出换行**。真实设备的分页/确认提示也是这样，
+      // 触发器必须靠「尾部防抖」才能匹配到它 —— 逐 chunk 匹配会全部落空。
+      shellCtl.write('Are you sure? (yes/no)? ')
+      shellCtl.setSubMode({
+        kind: 'confirm',
+        onAnswer: (answer) => {
+          if (/^y(es)?$/i.test(answer)) {
+            shellCtl.line(`OK, proceeding (answer=${answer || 'yes'})`)
+          } else {
+            shellCtl.line(`Aborted (answer=${answer || 'empty'})`)
+          }
+          shellCtl.prompt()
+        },
+        onAbort: () => {
+          shellCtl.line('已取消。')
+        },
+      })
+      return 'no-prompt'
+    }
+
+    case 'pager': {
+      const total = Math.min(Math.max(Number.parseInt(arg, 10) || 40, 4), 400)
+      const pageSize = 8
+      const MORE = '--More--'
+      let cursor = 0
+
+      const printPage = () => {
+        const end = Math.min(cursor + pageSize, total)
+        for (; cursor < end; cursor += 1) {
+          shellCtl.write(`第 ${cursor + 1} / ${total} 行：mock 分页内容\r\n`)
+        }
+        if (cursor < total) {
+          // `--More--` 同样不带换行，等一个按键才继续
+          shellCtl.write(MORE)
+          shellCtl.setSubMode({
+            kind: 'pager',
+            onKey: () => {
+              shellCtl.write(`\r${' '.repeat(MORE.length)}\r`)
+              printPage()
+            },
+          })
+        } else {
+          // 到文件末尾必须退出子模式 —— 否则 shell 会永久停在「等一个按键」的状态，
+          // 之后敲什么都只会再打印一次「文件结束」
+          shellCtl.setSubMode(null)
+          shellCtl.line('(文件结束)')
+          shellCtl.prompt()
+        }
+      }
+
+      shellCtl.line(`分页显示 ${total} 行，按任意键翻页…`)
+      printPage()
+      return 'no-prompt'
+    }
+
+    case 'errors':
+      // 每行都以 \n 收尾（w 会转成 \r\n）：真实设备打印报告就是这样，
+      // 而不是把整段挤在一行里
+      w(
+        stream,
+        '开始自检…\n' +
+          '[  ok  ] 内核模块加载成功\n' +
+          '[ fail ] disk0 校验 failed，错误码 code=5001\n' +
+          '[ warn ] nic1 链路抖动，错误码 code=1004\n' +
+          'error: 认证超时 after 30s\n' +
+          '[ fail ] sensor 读取 error，错误码 code=5001\n',
+      )
+      break
+
     case 'exit':
       w(stream, '再见。')
       stream.exit(0)
@@ -519,6 +664,98 @@ function handleCommand(stream, cmd, pty, requestQuit) {  const [name, ...rest] =
       w(stream, `未知指令：${name}（输入 help 查看可用指令）`)
   }
   return 'prompt'
+}
+
+/**
+ * exec 通道：不调用系统 shell，按命令内容返回预置结果。
+ *
+ * 为什么不用真的 `/bin/sh -c`：批量执行验证关心的是**退出码与 stdout/stderr 是否
+ * 被正确分离地取回**，而不是命令本身。预置结果让每条用例的期望值都是确定的，
+ * 且不依赖测试机上装了哪些工具（Windows 上没有 df）。
+ *
+ * 输出一律用 LF：exec（pty=false）没有终端行纪律，真实 sshd 也是 LF；
+ * 若在客户端看到 `\r\n` 说明中间多了一层 PTY，那本身就是 bug。
+ *
+ * @param {import('ssh2').ServerChannel} stream
+ * @param {string} command
+ */
+function runExecCommand(stream, command) {
+  const cmd = String(command ?? '').trim()
+  const lower = cmd.toLowerCase()
+
+  const finish = (code, stdout, stderr) => {
+    if (stdout) stream.write(stdout.endsWith('\n') ? stdout : `${stdout}\n`)
+    if (stderr) {
+      stream.stderr.write(Buffer.from(stderr.endsWith('\n') ? stderr : `${stderr}\n`, 'utf8'))
+    }
+    // 先送 exit-status 再关通道：顺序反了客户端就拿不到退出码
+    stream.exit(code)
+    stream.end()
+  }
+
+  // 退出码用例：`exit 7`
+  const exitMatch = /^exit\s+(\d{1,3})$/.exec(lower)
+  if (exitMatch) {
+    const code = Math.min(Number.parseInt(exitMatch[1], 10), 255)
+    finish(code, `exited with ${code}`)
+    return
+  }
+
+  // 静默用例：`sleep 5`（验证批量执行的超时与并发上限）
+  const sleepMatch = /^sleep\s+(\d{1,3})$/.exec(lower)
+  if (sleepMatch) {
+    const sec = Math.min(Number.parseInt(sleepMatch[1], 10), 600)
+    const timer = setTimeout(() => finish(0, `slept ${sec}s`), sec * 1000)
+    const cancel = () => clearTimeout(timer)
+    stream.once('close', cancel)
+    stream.once('error', cancel)
+    return
+  }
+
+  // 失败用例：命令里含 fail / error / boom → stderr 一行 + 退出码 3
+  if (/fail|error|boom/.test(lower)) {
+    finish(3, '', `mock-exec: command failed: ${cmd}`)
+    return
+  }
+
+  if (lower === 'hostname') {
+    finish(0, MOCK_NAME)
+    return
+  }
+
+  if (lower === 'whoami') {
+    finish(0, USER)
+    return
+  }
+
+  if (/^df\b/.test(lower)) {
+    finish(
+      0,
+      [
+        'Filesystem      Size  Used Avail Use% Mounted on',
+        '/dev/sda1        40G   12G   26G  32% /',
+        '/dev/sdb1       200G   88G  102G  47% /data',
+      ].join('\n'),
+    )
+    return
+  }
+
+  // 大输出用例：验证批量执行对单目标输出的截断（BATCH_MAX_OUTPUT_BYTES = 256 KB）
+  const bigMatch = /^big\s+(\d{1,5})$/.exec(lower)
+  if (bigMatch) {
+    const kb = Math.min(Number.parseInt(bigMatch[1], 10), 4096)
+    const line = `${'0123456789abcdefghijklmnopqrstuvwxyz'.repeat(2)}\n`
+    const lineBytes = Buffer.byteLength(line)
+    const count = Math.ceil((kb * 1024) / lineBytes)
+    const chunk = Buffer.alloc(count * lineBytes)
+    chunk.fill(line)
+    stream.write(chunk)
+    finish(0, `wrote ${kb} KB`)
+    return
+  }
+
+  // 默认：回显「主机名: 命令」，退出码 0
+  finish(0, `${MOCK_NAME}: ${cmd || '(empty)'}`)
 }
 
 server.listen(PORT, HOST, () => {

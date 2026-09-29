@@ -26,6 +26,7 @@ export const capabilityRoutes: FastifyPluginAsync = async (app) => {
       supportedProtocols: [...CONNECTION_PROTOCOLS],
       supportedTunnelTypes: [...TUNNEL_TYPES],
       maxTunnelsPerSession: MAX_TUNNELS_PER_SESSION,
+      automation: app.automation.capabilities(),
       backpressureHighWaterMark: BACKPRESSURE_HIGH_WATER_MARK,
       backpressureLowWaterMark: BACKPRESSURE_LOW_WATER_MARK,
     }

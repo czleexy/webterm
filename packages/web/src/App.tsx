@@ -9,6 +9,8 @@ import { WelcomePane } from './components/WelcomePane'
 import { NewSessionDialog, type ConnectMode } from './components/NewSessionDialog'
 import { SessionDialog } from './components/SessionDialog'
 import { TunnelPanel } from './components/TunnelPanel'
+import { AutomationPanel } from './components/AutomationPanel'
+import { BroadcastBar, BroadcastPanel } from './automation/BroadcastPanel'
 import { VaultGate } from './components/VaultGate'
 import { useHealth } from './hooks/useHealth'
 import { TERMINAL_TAB_TONE, useTerminalStore, newTab, newTabFromSession } from './store/useTerminalStore'
@@ -16,6 +18,8 @@ import { SFTP_TAB_TONE, useSftpStore } from './store/useSftpStore'
 import { useTunnelStore } from './store/useTunnelStore'
 import { useVaultStore } from './store/useVaultStore'
 import { useLibraryStore } from './store/useLibraryStore'
+import { useAutomationStore } from './store/useAutomationStore'
+import { useBroadcastStore } from './store/useBroadcastStore'
 import { TerminalPane } from './terminal/TerminalPane'
 import { SftpWorkspace } from './sftp/SftpWorkspace'
 import { applyTheme, useThemeStore } from './theme/useTheme'
@@ -53,6 +57,16 @@ export default function App() {
   // 只统计运行中的：徽标上的数字要能回答「现在有几条隧道在工作」
   const tunnelCount = useTunnelStore((s) => s.tunnels.filter((t) => t.status === 'active').length)
 
+  /* ---------------- 阶段 6：自动化与同步输入 ---------------- */
+
+  const openAutomation = useAutomationStore((s) => s.openPanel)
+  // 徽标统计「启用中的规则」：那是真正会在会话上生效的数量
+  const enabledTriggerCount = useAutomationStore((s) => s.triggers.filter((r) => r.enabled).length)
+  const unseenHits = useAutomationStore((s) => s.unseenHits)
+  const broadcastEnabled = useBroadcastStore((s) => s.enabled)
+  const setBroadcastPanelOpen = useBroadcastStore((s) => s.setPanelOpen)
+  const disableBroadcast = useBroadcastStore((s) => s.disable)
+
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickMode, setQuickMode] = useState<ConnectMode>('terminal')
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false)
@@ -79,6 +93,9 @@ export default function App() {
   useEffect(() => {
     if (vaultReady && vaultUnlocked) {
       void useLibraryStore.getState().refresh()
+      // 自动化定义一次拉全：触发器要在第一个会话建立之前就位，
+      // 否则「先连上设备、再去面板加规则」这段时间里规则是不生效的
+      void useAutomationStore.getState().loadAll()
     }
   }, [vaultReady, vaultUnlocked])
 
@@ -106,6 +123,8 @@ export default function App() {
         label: tone.text,
         pulse: tone.pulse,
         notice: tab.notice,
+        labels: tab.labels,
+        unseenHits: unseenHits[tab.id] ?? 0,
       }
     })
     const sftpItems: WorkspaceTabItem[] = sftpTabs.map((tab) => {
@@ -122,7 +141,7 @@ export default function App() {
       }
     })
     return [...terminalItems, ...sftpItems]
-  }, [sftpTabs, tabs])
+  }, [sftpTabs, tabs, unseenHits])
 
   const connections = useMemo<ConnectionItem[]>(
     () =>
@@ -237,6 +256,10 @@ export default function App() {
         })
       }
       removeAndFocusNext(id)
+      // 关掉标签后把它的命中记录一并清掉：那个终端已经不存在了，
+      // 留着记录只会在面板里堆一堆指向空 tabId 的条目
+      useAutomationStore.getState().clearHits(id)
+      useBroadcastStore.getState().prune(tabs.filter((t) => t.id !== id).map((t) => t.id))
     },
     [removeAndFocusNext, removeSftpAndFocusNext, tabs],
   )
@@ -249,7 +272,10 @@ export default function App() {
         return
       }
       setActiveKind('terminal')
-      setActiveTerminal(unifiedId.slice('terminal:'.length))
+      const terminalTabId = unifiedId.slice('terminal:'.length)
+      setActiveTerminal(terminalTabId)
+      // 切过去看到的就是这个终端的现状，角标该清了
+      useAutomationStore.getState().markHitsSeen(terminalTabId)
     },
     [setActiveSftp, setActiveTerminal],
   )
@@ -336,11 +362,19 @@ export default function App() {
         const delta = key === 'arrowdown' ? 1 : -1
         const next = tabItems[(index + delta + tabItems.length) % tabItems.length]
         if (next) handleSelect(next.id)
+        return
+      }
+      if (key === 'b') {
+        // Alt+B 一键掐断广播。这是唯一一个「越快越好」的操作：
+        // 广播开着的时候，用户意识到不对劲到下一次按回车之间只有一两秒。
+        e.preventDefault()
+        if (useBroadcastStore.getState().enabled) disableBroadcast()
+        else setBroadcastPanelOpen(true)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeKey, handleClose, handleSelect, openQuick, tabItems])
+  }, [activeKey, disableBroadcast, handleClose, handleSelect, openQuick, setBroadcastPanelOpen, tabItems])
 
   // 保险库未就绪 / 未解锁时，整个应用被门禁挡住
   if (!vaultUnlocked) {
@@ -361,7 +395,14 @@ export default function App() {
         serverVersion={health.data?.version}
         onOpenTunnels={openTunnels}
         tunnelCount={tunnelCount}
+        onOpenAutomation={() => openAutomation()}
+        triggerCount={enabledTriggerCount}
+        onOpenBroadcast={() => setBroadcastPanelOpen(true)}
+        broadcastOn={broadcastEnabled}
       />
+
+      {/* 同步输入开着时，工作区顶部常驻警示条 —— 不能只靠一个小指示灯 */}
+      <BroadcastBar />
 
       <div className="flex min-h-0 flex-1">
         <SessionSidebar
@@ -440,6 +481,8 @@ export default function App() {
       />
 
       <TunnelPanel />
+      <AutomationPanel />
+      <BroadcastPanel />
     </div>
   )
 }

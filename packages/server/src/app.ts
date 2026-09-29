@@ -15,6 +15,7 @@ import { credentialRoutes } from './api/rest/credentials.js'
 import { libraryRoutes } from './api/rest/library.js'
 import { sftpRoutes } from './api/rest/sftp.js'
 import { tunnelRoutes } from './api/rest/tunnels.js'
+import { automationRoutes } from './api/rest/automation.js'
 import { terminalWsRoutes } from './api/ws/terminal.js'
 import { sftpWsRoutes } from './api/ws/sftp.js'
 import { KnownHostsStore } from './ssh/known-hosts.js'
@@ -22,9 +23,11 @@ import { TerminalManager } from './terminal/terminal-manager.js'
 import { Vault } from './security/vault.js'
 import { CredentialStore } from './security/credential-store.js'
 import { LibraryStore } from './db/library.js'
+import { AutomationStore } from './db/automation.js'
 import { openDatabase } from './db/index.js'
 import { SessionResolver } from './api/resolver.js'
 import { SftpManager } from './sftp/sftp-manager.js'
+import { AutomationService } from './automation/automation-service.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -39,6 +42,9 @@ declare module 'fastify' {
     library: LibraryStore
     sessionResolver: SessionResolver
     sftp: SftpManager
+    /** 阶段 6：自动化的持久化层与运行时服务 */
+    automationStore: AutomationStore
+    automation: AutomationService
   }
 }
 
@@ -90,6 +96,17 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
     concurrency: config.sftpConcurrency,
   })
 
+  // 阶段 6：自动化（触发器 / 宏 / 脚本 / 批量执行）
+  const automationStore = new AutomationStore(db)
+  const automation = new AutomationService({
+    store: automationStore,
+    library,
+    terminals,
+    knownHosts,
+    sessionResolver,
+    logger: app.log,
+  })
+
   app.decorate('knownHosts', knownHosts)
   app.decorate('terminals', terminals)
   app.decorate('vault', vault)
@@ -97,9 +114,12 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   app.decorate('library', library)
   app.decorate('sessionResolver', sessionResolver)
   app.decorate('sftp', sftp)
+  app.decorate('automationStore', automationStore)
+  app.decorate('automation', automation)
   // 进程退出时统一关闭所有 SSH 连接，避免留下悬挂会话占用远端 VTY；
   // 保险库清零内存密钥，数据库正常关闭（WAL checkpoint）
   app.addHook('onClose', async () => {
+    automation.dispose()
     sftp.dispose()
     terminals.dispose()
     vault.lock()
@@ -122,6 +142,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   await app.register(sessionRoutes, { prefix: API_PREFIX })
   await app.register(terminalRoutes, { prefix: API_PREFIX })
   await app.register(tunnelRoutes, { prefix: API_PREFIX })
+  await app.register(automationRoutes, { prefix: API_PREFIX })
   await app.register(sftpRoutes, { prefix: API_PREFIX })
   await app.register(terminalWsRoutes, { prefix: WS_PATH })
   await app.register(sftpWsRoutes, { prefix: WS_SFTP_PATH })

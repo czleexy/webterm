@@ -50,6 +50,7 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
     let config: SessionConfig | undefined = input.config
     let jumpChain: SshTarget[] | undefined
     let tunnels: TunnelSpec[] | undefined
+    let startupScripts: string[] = []
 
     if (input.sessionId) {
       try {
@@ -78,8 +79,9 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
             legacyCompat: record.legacyCompat ?? 'auto',
           }
           jumpChain = plan.jumpChain.length > 0 ? plan.jumpChain : undefined
-          // 随会话自动启动的隧道（阶段 5）。失败不阻断连接，只回传告警
+          // 随会话自动启动的隧道（阶段 5）与脚本（阶段 6）。两者失败都不阻断连接
           tunnels = (record.tunnels ?? []).length > 0 ? record.tunnels : undefined
+          startupScripts = record.startupScripts ?? []
         }
       } catch (err) {
         if (err instanceof VaultError) {
@@ -140,6 +142,11 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
 
     const tunnelWarnings = session.tunnelStartWarnings
     if (tunnelWarnings.length > 0) response.tunnelWarnings = tunnelWarnings
+    if (startupScripts.length > 0) response.startupScripts = startupScripts
+
+    // 阶段 6：装配触发器与启动脚本。
+    // 必须放在会话就绪之后 —— 触发器要往远端写数据，会话没起来时注入会丢。
+    app.automation.attachSession(session, { sessionId: input.sessionId, startupScripts })
 
     return reply.code(201).send(response)
   })
@@ -166,6 +173,8 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
   })
 
   app.delete<{ Params: { id: string } }>('/terminals/:id', async (request, reply) => {
+    // 先摘自动化（停掉触发器的延迟定时器），再关隧道与连接
+    app.automation.detachSession(request.params.id)
     // close 会先撤掉隧道（等监听端口真正释放）再拆 SSH 连接
     const closed = await manager.close(request.params.id)
     if (!closed) {

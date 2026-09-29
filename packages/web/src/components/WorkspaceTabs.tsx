@@ -28,6 +28,18 @@ export interface WorkspaceTabItem {
   label: string
   pulse?: boolean
   notice?: string
+  /**
+   * 触发器「记录标签」动作打上的标签。
+   * 只展示前两个：标签栏只有 2.25rem 高，多于两个必然挤掉标题，
+   * 而标题是用户辨认「这是哪台机器」的唯一依据。
+   */
+  labels?: string[]
+  /**
+   * 未被查看过的触发器命中数。
+   * 这个角标的意义是：一个后台标签里的设备弹了确认提示、规则自动答了，
+   * 用户需要有办法知道「刚才有别的地方动过」。切到该标签即清零。
+   */
+  unseenHits?: number
 }
 
 interface WorkspaceTabsProps {
@@ -103,6 +115,36 @@ export function WorkspaceTabs({
               )}
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
 
+              {/* 命中角标：后台标签被自动化动过时的唯一提示 */}
+              {item.unseenHits && item.unseenHits > 0 ? (
+                <span
+                  data-testid={`tab-hit-badge-${item.id}`}
+                  title={`有 ${item.unseenHits} 次触发器命中未被查看`}
+                  className="shrink-0 rounded-full bg-violet-100 px-1.5 text-[9px] font-medium leading-4 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300"
+                >
+                  ⚡{item.unseenHits}
+                </span>
+              ) : null}
+
+              {/* 规则打上的标签（最多显示两个） */}
+              {item.labels?.slice(0, 2).map((label) => (
+                <span
+                  key={label}
+                  title={`触发器标签：${label}`}
+                  className="max-w-16 shrink-0 truncate rounded border border-sky-300 bg-sky-50 px-1 py-px text-[9px] leading-none text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-400"
+                >
+                  {label}
+                </span>
+              ))}
+              {item.labels && item.labels.length > 2 ? (
+                <span
+                  title={item.labels.join('、')}
+                  className="shrink-0 text-[9px] text-neutral-400 dark:text-neutral-500"
+                >
+                  +{item.labels.length - 2}
+                </span>
+              ) : null}
+
               {item.kind === 'terminal' && onOpenSftpFor && item.sftpAvailable !== false ? (
                 <button
                   type="button"
@@ -147,6 +189,7 @@ export function WorkspaceTabs({
 
       <button
         type="button"
+        data-testid="new-tab"
         onClick={onNew}
         title="新建连接"
         aria-label="新建连接"

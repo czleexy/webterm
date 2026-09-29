@@ -459,7 +459,8 @@ try {
     await clickText('设置并解锁')
   }
   check('设置主密码后进入主界面', await hasText('会话库', 12_000))
-  check('欢迎页声明完成阶段 0 ~ 5', await hasText('已完成阶段 0 ~ 5'))
+  check('欢迎页声明完成阶段 0 ~ 6', await hasText('已完成阶段 0 ~ 6'))
+  check('欢迎页列出自动化与批量运维', await hasText('自动化与批量运维'))
   check('欢迎页列出端口转发阶段', await hasText('端口转发与隧道'))
   check('头部出现隧道入口', await exists('[data-testid="open-tunnels"]'))
   await shot('01-main')

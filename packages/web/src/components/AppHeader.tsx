@@ -22,6 +22,14 @@ interface AppHeaderProps {
   onOpenTunnels?: () => void
   /** 运行中的隧道数量，用于入口上的徽标 */
   tunnelCount?: number
+  /** 打开自动化面板（触发器 / 按钮栏 / 脚本 / 批量执行） */
+  onOpenAutomation?: () => void
+  /** 处于启用状态（或已命中过）的规则数量，用于入口上的徽标 */
+  triggerCount?: number
+  /** 打开同步输入面板 */
+  onOpenBroadcast?: () => void
+  /** 同步输入是否已开启 —— 入口本身也要变红，不能只在警示条上提示 */
+  broadcastOn?: boolean
 }
 
 export function AppHeader({
@@ -29,6 +37,10 @@ export function AppHeader({
   serverVersion,
   onOpenTunnels,
   tunnelCount = 0,
+  onOpenAutomation,
+  triggerCount = 0,
+  onOpenBroadcast,
+  broadcastOn = false,
 }: AppHeaderProps) {
   const mode = useThemeStore((state) => state.mode)
   const toggleTheme = useThemeStore((state) => state.toggle)
@@ -53,6 +65,58 @@ export function AppHeader({
       </div>
 
       <div className="flex items-center gap-3">
+        {onOpenAutomation ? (
+          <button
+            type="button"
+            data-testid="open-automation"
+            onClick={onOpenAutomation}
+            title="自动化：触发器 / 按钮栏 / 脚本 / 批量执行"
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1 text-[11px] text-neutral-600 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            <svg viewBox="0 0 24 24" className="size-3.5" aria-hidden="true">
+              <path
+                d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinejoin="round"
+              />
+            </svg>
+            自动化
+            {triggerCount > 0 ? (
+              <span className="rounded bg-violet-100 px-1 text-[10px] font-medium text-violet-700 dark:bg-violet-950/60 dark:text-violet-300">
+                {triggerCount}
+              </span>
+            ) : null}
+          </button>
+        ) : null}
+
+        {onOpenBroadcast ? (
+          <button
+            type="button"
+            data-testid="open-broadcast"
+            data-active={broadcastOn ? 'true' : 'false'}
+            onClick={onOpenBroadcast}
+            title="同步输入：一次按键同时发给多个终端"
+            className={
+              broadcastOn
+                ? 'flex items-center gap-1.5 rounded-md border border-amber-500 bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800 transition-colors hover:bg-amber-200 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                : 'flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1 text-[11px] text-neutral-600 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800'
+            }
+          >
+            <svg viewBox="0 0 24 24" className="size-3.5" aria-hidden="true">
+              <path
+                d="M6 8h12M6 12h12M6 16h7"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
+            同步输入{broadcastOn ? '（开）' : ''}
+          </button>
+        ) : null}
+
         {onOpenTunnels ? (
           <button
             type="button"

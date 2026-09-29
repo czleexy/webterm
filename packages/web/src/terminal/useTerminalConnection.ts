@@ -24,12 +24,24 @@ const RECONNECT_DELAYS = [600, 1500, 3000]
 const CLOSE_UNAUTHORIZED = 4401
 const CLOSE_NOT_FOUND = 4404
 
+type TriggerMessage = Extract<ServerControlMessage, { t: 'trigger' }>
+type ScriptMessage = Extract<ServerControlMessage, { t: 'script' }>
+type MacroMessage = Extract<ServerControlMessage, { t: 'macro' }>
+
 interface UseTerminalConnectionOptions {
   tab: TerminalTab
   /** 惰性获取 xterm 实例（实例在另一个 effect 中创建，故用 getter 而非直接传引用） */
   getTerm: () => Terminal | null
   setStatus: (patch: Partial<TerminalTab>) => void
   setBanner: (message: string | null) => void
+  /**
+   * 阶段 6：自动化运行态的三类推送。
+   * 做成回调而不是让本 Hook 直接写 store，是为了让「连接层」保持只负责传输 ——
+   * 它不知道也不需要知道什么叫规则命中。
+   */
+  onTrigger?: (msg: TriggerMessage) => void
+  onScript?: (msg: ScriptMessage) => void
+  onMacro?: (msg: MacroMessage) => void
 }
 
 export interface TerminalConnection {
@@ -39,6 +51,8 @@ export interface TerminalConnection {
   sendBinary: (payload: Uint8Array) => void
   /** 用户手动触发的重连（自动重连耗尽后可用） */
   reconnect: () => void
+  /** 当前连接是否可写（同步输入广播用它筛选接收方） */
+  isWritable: () => boolean
 }
 
 export function useTerminalConnection({
@@ -46,6 +60,9 @@ export function useTerminalConnection({
   getTerm,
   setStatus,
   setBanner,
+  onTrigger,
+  onScript,
+  onMacro,
 }: UseTerminalConnectionOptions): TerminalConnection {
   const wsRef = useRef<WebSocket | null>(null)
   const connRef = useRef<CreateTerminalResponse | null>(null)
@@ -57,9 +74,15 @@ export function useTerminalConnection({
   const getTermRef = useRef(getTerm)
   const setStatusRef = useRef(setStatus)
   const setBannerRef = useRef(setBanner)
+  const onTriggerRef = useRef(onTrigger)
+  const onScriptRef = useRef(onScript)
+  const onMacroRef = useRef(onMacro)
   getTermRef.current = getTerm
   setStatusRef.current = setStatus
   setBannerRef.current = setBanner
+  onTriggerRef.current = onTrigger
+  onScriptRef.current = onScript
+  onMacroRef.current = onMacro
 
   const sendControl = useCallback((msg: ClientControlMessage) => {
     const ws = wsRef.current
@@ -72,6 +95,16 @@ export function useTerminalConnection({
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     ws.send(payload)
   }, [])
+
+  /**
+   * 连接是否可写。
+   * 读 wsRef 而不是读 tab.status：status 是渲染用的状态快照，会有一次渲染的延迟，
+   * 广播正在往一批终端投字节时，用陈旧状态判断会把刚断开的目标也算进去。
+   */
+  const isWritable = useCallback(
+    () => wsRef.current !== null && wsRef.current.readyState === WebSocket.OPEN,
+    [],
+  )
 
   /** 向终端写入一条带颜色的提示行 */
   const writeNotice = useCallback((text: string, tone: 'error' | 'info' = 'info') => {
@@ -128,6 +161,20 @@ export function useTerminalConnection({
           break
 
         case 'pong':
+          break
+
+        // 阶段 6：三类自动化运行态。连接层只做转发，具体反应由上层决定
+        // （命中要标色、脚本要进日志面板、宏要进进度条，三者关注的东西完全不同）
+        case 'trigger':
+          onTriggerRef.current?.(msg)
+          break
+
+        case 'script':
+          onScriptRef.current?.(msg)
+          break
+
+        case 'macro':
+          onMacroRef.current?.(msg)
           break
       }
     },
@@ -290,5 +337,5 @@ export function useTerminalConnection({
     openSocket(conn)
   }, [openSocket])
 
-  return { sendControl, sendBinary, reconnect }
+  return { sendControl, sendBinary, reconnect, isWritable }
 }

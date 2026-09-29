@@ -15,11 +15,16 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
-import { DEFAULT_SCROLLBACK } from '@webterm/shared'
+import { DEFAULT_SCROLLBACK, type ServerControlMessage } from '@webterm/shared'
 import { useTerminalStore, type TerminalTab } from '../store/useTerminalStore'
+import { useBroadcastStore } from '../store/useBroadcastStore'
+import { useAutomationStore } from '../store/useAutomationStore'
+import { reactToTrigger } from '../automation/terminalReactions'
+import { MacroBar } from '../automation/MacroBar'
 import { useThemeStore } from '../theme/useTheme'
 import { terminalTheme } from './theme'
 import { useTerminalConnection } from './useTerminalConnection'
+import { broadcastInput, registerTerminalEndpoint } from './terminalBus'
 import { cn } from '../utils/cn'
 import { PROTOCOL_CHIP_CLASS, protocolLabel } from '../utils/protocol'
 
@@ -42,6 +47,7 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
 
   const mode = useThemeStore((state) => state.mode)
   const updateTab = useTerminalStore((state) => state.updateTab)
+  const addLabel = useTerminalStore((state) => state.addLabel)
 
   const getTerm = useCallback(() => termRef.current, [])
 
@@ -52,12 +58,100 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
     [tab.id, updateTab],
   )
 
-  const { sendControl, sendBinary, reconnect } = useTerminalConnection({
+  /**
+   * 活动状态的 ref 副本。
+   * 自动化事件回调里需要判断「用户是不是正看着这个终端」来决定要不要打角标，
+   * 但回调是在 xterm 的 effect 里注册的、不随 active 变化重建（重建会丢掉滚动缓冲），
+   * 所以用 ref 读最新值。
+   */
+  const activeRef = useRef(active)
+  activeRef.current = active
+
+  /** 往终端里追加一行提示（与 useTerminalConnection 内的同名前缀保持一致） */
+  const writeNotice = useCallback((text: string, tone: 'error' | 'info' = 'info') => {
+    const term = termRef.current
+    if (!term) return
+    const color = tone === 'error' ? '\x1b[31m' : '\x1b[90m'
+    term.write(`\r\n${color}${text}\x1b[0m\r\n`)
+  }, [])
+
+  /* ------------------------------------------------------------------ */
+  /* 阶段 6：自动化运行态的渲染端反应                                       */
+  /* ------------------------------------------------------------------ */
+
+  const handleTrigger = useCallback(
+    (msg: Extract<ServerControlMessage, { t: 'trigger' }>) => {
+      const automation = useAutomationStore.getState()
+      const outcome = reactToTrigger({
+        term: termRef.current,
+        line: msg.line,
+        matched: msg.matched,
+        ruleName: msg.ruleName,
+        ui: msg.ui,
+        performed: msg.performed,
+        announce: automation.announceInTerminal,
+      })
+
+      automation.recordHit({
+        tabId: tab.id,
+        tabTitle: tab.title,
+        ruleId: msg.ruleId,
+        ruleName: msg.ruleName,
+        line: msg.line,
+        matched: msg.matched,
+        color: outcome.color,
+        performed: msg.performed,
+        notified: outcome.notified,
+        labels: outcome.labels,
+      })
+      // 用户正在看着这个终端，角标不该亮 —— 记录照留，只是不算「未读」
+      if (activeRef.current) automation.markHitsSeen(tab.id)
+      for (const label of outcome.labels) addLabel(tab.id, label)
+    },
+    [addLabel, tab.id, tab.title],
+  )
+
+  const handleScript = useCallback(
+    (msg: Extract<ServerControlMessage, { t: 'script' }>) => {
+      useAutomationStore.getState().applyScriptMessage(tab.id, tab.title, msg)
+    },
+    [tab.id, tab.title],
+  )
+
+  const handleMacro = useCallback(
+    (msg: Extract<ServerControlMessage, { t: 'macro' }>) => {
+      useAutomationStore.getState().applyMacroMessage(tab.id, msg)
+      // 宏平时是「看得见的」（命令一条条打在屏幕上），只有失败必须额外说一声：
+      // 否则用户只会看到输出停在半路，完全不知道是宏在等一个永远不会出现的东西
+      if (msg.phase === 'error') {
+        writeNotice(`宏「${msg.macroName}」执行失败：${msg.error ?? '未知错误'}`, 'error')
+      }
+    },
+    [tab.id, writeNotice],
+  )
+
+  const { sendControl, sendBinary, reconnect, isWritable } = useTerminalConnection({
     tab,
     getTerm,
     setStatus,
     setBanner,
+    onTrigger: handleTrigger,
+    onScript: handleScript,
+    onMacro: handleMacro,
   })
+
+  /* ------------------------------------------------------------------ */
+  /* 0. 登记到输入总线（同步输入广播按 tabId 找目标）                      */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    return registerTerminalEndpoint({
+      tabId: tab.id,
+      title: tab.title,
+      sendBinary,
+      sendControl,
+      isWritable,
+    })
+  }, [tab.id, tab.title, sendBinary, sendControl, isWritable])
 
   /* ------------------------------------------------------------------ */
   /* 1. 创建 xterm 实例（仅一次）                                          */
@@ -93,6 +187,14 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
     // 用 TextEncoder 得到 UTF-8 字节；若目标编码不是 UTF-8，服务端会再转码。
     const inputSub = term.onData((data) => {
       sendBinary(new TextEncoder().encode(data))
+
+      // 同步输入：开启广播时，同一段按键再投递给其他选中的终端。
+      // 先发自己再发别人，是因为源终端必须无条件收到自己的输入 ——
+      // 广播配置出问题不该让用户「连自己这台都敲不动」。
+      const broadcast = useBroadcastStore.getState()
+      if (!broadcast.enabled) return
+      const outcome = broadcastInput(data, broadcast.targets, tab.id)
+      broadcast.recordReceipt({ delivered: outcome.delivered.length, skipped: outcome.skipped.length })
     })
 
     // 尺寸变化（FitAddon 触发）→ 通知服务端调整远端 PTY
@@ -194,6 +296,10 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
       data-active={active ? 'true' : 'false'}
       data-protocol={tab.protocol}
       data-status={tab.status}
+      // 测试钩子：所有面板都挂载着（非活动的只是 CSS 隐藏），
+      // 外部要靠标题/客户端 tabId 才能定位「我要读哪一个终端」的内容
+      data-tab-title={tab.title}
+      data-tab-id={tab.id}
       className={cn('h-full min-h-0 flex-col', active ? 'flex' : 'hidden')}
     >
       {banner ? (
@@ -266,6 +372,9 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
           清屏
         </ToolbarButton>
       </div>
+
+      {/* 按钮栏：宏是「针对这个会话」的动作，所以长在终端上而不是面板里 */}
+      <MacroBar tab={tab} />
 
       {/* xterm 需要容器有确定尺寸，故用绝对定位填满剩余空间 */}
       <div className="relative min-h-0 flex-1 bg-white dark:bg-neutral-950">

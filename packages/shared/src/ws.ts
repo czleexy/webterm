@@ -9,6 +9,7 @@
  * 因此前端不需要解析二进制帧的内容，直接写入 xterm；控制消息才走 JSON。
  */
 import type { ConnectionProtocol } from './constants.js'
+import type { ScriptLogLevel, TriggerUiAction } from './automation.js'
 
 /** 客户端 → 服务端的控制消息 */
 export type ClientControlMessage =
@@ -47,6 +48,58 @@ export type ServerControlMessage =
   | { t: 'pong' }
   /** 服务端进入背压保护，暂停向本连接推送输出 */
   | { t: 'flow'; action: 'pause' | 'resume' }
+  /**
+   * 触发器命中（阶段 6）。
+   *
+   * 只有「需要渲染端配合」的动作才在这里出现：自动应答与执行脚本都在服务端
+   * 就地完成了，前端收到这条消息是为了高亮那一行、弹通知、打标签，
+   * 以及把「已自动应答 yes」这类事实回显给用户 —— 否则用户只看到屏幕自己动了，
+   * 完全不知道是谁按的。
+   */
+  | {
+      t: 'trigger'
+      ruleId: string
+      ruleName: string
+      /** 命中的整行（已剥离 ANSI 控制序列） */
+      line: string
+      /** 行内实际匹配到的片段 */
+      matched: string
+      at: string
+      /** 需要前端配合的动作 */
+      ui: TriggerUiAction[]
+      /** 已在服务端完成的动作摘要 */
+      performed: string[]
+    }
+  /**
+   * 脚本运行事件（阶段 6）。
+   * 一次运行会先来一条 `start`，随后若干条 `log`，最后以 `done` / `error` / `timeout` 收尾。
+   */
+  | {
+      t: 'script'
+      runId: string
+      scriptName: string
+      phase: 'start' | 'log' | 'done' | 'error' | 'timeout'
+      level?: ScriptLogLevel
+      message?: string
+      /** 脚本 return 的值（可 JSON 序列化时） */
+      result?: unknown
+      error?: string
+      elapsedMs?: number
+      at: string
+    }
+  /** 宏执行进度（阶段 6） */
+  | {
+      t: 'macro'
+      runId: string
+      macroName: string
+      phase: 'start' | 'step' | 'done' | 'error'
+      /** phase = step 时的当前步序号，从 1 开始 */
+      stepIndex?: number
+      stepCount?: number
+      detail?: string
+      error?: string
+      at: string
+    }
 
 /** 终端错误码，前端据此给出针对性的提示文案 */
 export type TerminalErrorCode =

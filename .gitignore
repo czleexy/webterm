@@ -24,6 +24,8 @@ dist/
 !/data/tmp/e2e-browser-telnet.mjs
 !/data/tmp/e2e-tunnel.mjs
 !/data/tmp/e2e-browser-tunnel.mjs
+!/data/tmp/e2e-automation.mjs
+!/data/tmp/e2e-browser-automation.mjs
 
 # 子包内的运行时数据目录（服务端默认数据目录等）
 packages/*/data/

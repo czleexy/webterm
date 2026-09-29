@@ -57,6 +57,12 @@ export interface TerminalTab {
   telnetOptions?: TelnetNegotiationSummary
   /** 结束原因 / 错误说明，用于标签提示与面板内的提示条 */
   notice?: string
+  /**
+   * 由触发器「记录标签」动作打上的标签（去重、保持追加顺序）。
+   * 放在标签上而不是自动化 store 里：标签的语义是「这个终端现在是什么状态」，
+   * 标签栏、批量执行的目标列表都可能要读它。
+   */
+  labels?: string[]
   /** 服务端记录的实际 PTY 尺寸 */
   dims: { cols: number; rows: number }
   createdAt: number
@@ -71,6 +77,8 @@ interface TerminalStore {
   setActive: (id: string) => void
   /** 关闭后自动选择相邻标签（优先右侧，否则左侧） */
   removeAndFocusNext: (id: string) => void
+  /** 打标签：已存在时什么都不做，避免重复追加把标签栏撑爆 */
+  addLabel: (id: string, label: string) => void
 }
 
 export function createTabId(): string {
@@ -161,5 +169,18 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       nextActive = tabs2[index]?.id ?? tabs2[index - 1]?.id ?? null
     }
     set({ tabs: tabs2, activeTabId: nextActive })
+  },
+
+  addLabel: (id, label) => {
+    const trimmed = label.trim()
+    if (!trimmed) return
+    set((state) => ({
+      tabs: state.tabs.map((tab) => {
+        if (tab.id !== id) return tab
+        const labels = tab.labels ?? []
+        if (labels.includes(trimmed)) return tab
+        return { ...tab, labels: [...labels, trimmed] }
+      }),
+    }))
   },
 }))

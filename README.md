@@ -4,8 +4,9 @@
 
 服务跑在本机负责协议栈与连接管理，浏览器只负责渲染与交互。免安装、跨平台，配置与会话集中在一处管理。
 
-> 当前进度：**阶段 4（Telnet 明文终端）已交付** —— 端口 23、选项协商（TERMINAL-TYPE / NAWS）、本地回显兜底、IAC 转义，与 SSH 共用同一套终端与标签体系。
-> 前一阶段：阶段 3（SFTP 文件传输）—— 双栏浏览、传输队列（并发 / 断点续传 / 暂停取消）、拖拽互传、浏览器上传下载、文本预览与远程编辑（带 mtime 冲突检测）。
+> 当前进度：**阶段 5（端口转发与隧道）已交付** —— 本地转发 `-L`、远程转发 `-R`、动态转发 `-D`（SOCKS5 代理）、随会话自动启动、会话关闭即释放端口。
+> 前一阶段：阶段 4（Telnet 明文终端）—— 端口 23、选项协商（TERMINAL-TYPE / NAWS）、本地回显兜底、IAC 转义，与 SSH 共用同一套终端与标签体系。
+> 更早：阶段 3（SFTP 文件传输）—— 双栏浏览、传输队列（并发 / 断点续传 / 暂停取消）、拖拽互传、浏览器上传下载、文本预览与远程编辑（带 mtime 冲突检测）。
 > 详细设计见 [`docs/01-功能框架与需求说明书.md`](docs/01-功能框架与需求说明书.md) 与 [`docs/02-实现计划.md`](docs/02-实现计划.md)；
 > 测试方法见 [`docs/03-测试指南.md`](docs/03-测试指南.md)；界面截图见 [`docs/screenshots/`](docs/screenshots/)。
 
@@ -94,6 +95,27 @@ npm run dev
 
 ---
 
+## 阶段 5 已交付能力（端口转发与隧道）
+
+写法与 OpenSSH 完全对齐（`-L` / `-R` / `-D`），熟悉命令行的用户可以把已有经验直接搬过来。头部「隧道」按钮打开管理面板，每条隧道都展示等价的 `ssh` 命令，一眼确认「配的到底是哪一条」。
+
+| 能力 | 说明 |
+| --- | --- |
+| 本地转发 `-L` | 本机监听一个端口，连接经由 SSH 送到远端网络里的目标（如 `-L 13306:10.0.0.5:3306` 连内网数据库） |
+| 远程转发 `-R` | 远端监听一个端口，连接经由 SSH 送回本机的目标；监听端口可填 0 由远端分配，实际端口回填到界面 |
+| 动态转发 `-D` | 本机起一个 SOCKS5 代理（RFC 1928，仅 CONNECT、无认证），目标地址由客户端逐次指定（如 `-D 1080`） |
+| 隧道挂会话 | 隧道复用该会话已建立的 SSH 连接，不重复登录 —— 与 SFTP 借道终端连接是同一个考量（老设备 VTY 线路少） |
+| 随会话自动启动 | 会话编辑弹窗内嵌隧道配置；会话建立时自动启动，个别端口失败只提示不阻断连接 |
+| 生命周期 | 会话关闭时**先**撤销远端监听、**再**关闭本机监听，端口立即释放（`netstat` 可验证） |
+| 统计面板 | 每条隧道显示状态（启动中 / 运行中 / 已停止 / 错误）、当前与累计连接数、上下行字节数；面板打开期间每 2 秒刷新 |
+| 端口占用 | `EADDRINUSE` 不再抛裸 errno，而是「端口已被占用：127.0.0.1:13306 + 换端口建议」；失败的创建不留下幽灵记录 |
+| 错误分类 | 端口无权限（403）、目标不可达 / 远端拒绝转发（502，含 `AllowTcpForwarding no` 的针对性说明）、建通道超时（504），都带处置建议 |
+| 默认安全 | 监听地址默认 `127.0.0.1`（仅本机可用）；想开放给局域网必须显式填 `0.0.0.0`，界面常驻风险提示 |
+| 能力裁剪 | Telnet 会话没有可承载转发通道的协议层：不显示隧道配置，服务端对 Telnet 会话建隧道直接 400 |
+| 零新增依赖 | SOCKS5 用增量状态机手写（TCP 分包不会撕裂请求），未引入第三方代理库 |
+
+---
+
 ## 可用脚本
 
 在**根目录**执行：
@@ -121,9 +143,9 @@ webterm/
 ├─ docs/                     设计与计划文档（含界面截图）
 ├─ packages/
 │  ├─ shared/                前后端共享常量与类型（必须先构建）
-│  │  └─ src/{constants,api,ws,sftp}.ts
+│  │  └─ src/{constants,api,ws,sftp,tunnel}.ts
 │  ├─ server/                Fastify 服务端
-│  │  ├─ dev/mock-ssh-server.mjs     开发用 SSH 测试服务端（含 SFTP 子系统）
+│  │  ├─ dev/mock-ssh-server.mjs     开发用 SSH 测试服务端（含 SFTP 子系统 / 跳板 / 远程转发）
 │  │  ├─ dev/mock-telnet-server.mjs  开发用 Telnet 测试设备（选项协商 / NAWS / 回显开关）
 │  │  └─ src/
 │  │     ├─ index.ts         进程入口（加载配置 → 建目录 → 监听）
@@ -134,18 +156,19 @@ webterm/
 │  │     ├─ ssh/             算法档案 / 连接建立 / 跳板链 / 主机密钥 / 错误分类
 │  │     ├─ telnet/          协商状态机 / 传输层 / 错误分类（明文终端协议栈）
 │  │     ├─ sftp/            SFTP 会话 / 传输队列 / 本地路径沙箱
+│  │     ├─ tunnel/          端口转发：本地 / 远程 / SOCKS5 动态 + 隧道管理器 + 错误分类
 │  │     ├─ terminal/        终端会话（双传输：SSH / Telnet） / 会话注册表 / 编码桥
 │  │     └─ api/
-│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals / vault / credentials / library / sftp）
+│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals / vault / credentials / library / sftp / tunnels）
 │  │        ├─ resolver.ts   会话记录 → 明文连接参数
 │  │        └─ ws/           终端与 SFTP WebSocket 端点
 │  └─ web/                   React 前端
 │     └─ src/
 │        ├─ api/             REST 请求封装
-│        ├─ components/      UI 组件（门禁 / 弹窗 / 标签栏 / 会话库侧栏）
+│        ├─ components/      UI 组件（门禁 / 弹窗 / 标签栏 / 会话库侧栏 / 隧道面板）
 │        ├─ terminal/        xterm 封装 / 连接 Hook / 配色
 │        ├─ sftp/            SFTP 双栏工作区 / 文件列表 / 传输抽屉
-│        ├─ store/           标签页 / 保险库 / 会话库 / SFTP 状态（Zustand）
+│        ├─ store/           标签页 / 保险库 / 会话库 / SFTP / 隧道状态（Zustand）
 │        ├─ theme/           主题状态（Zustand persist）
 │        └─ utils/
 └─ data/                     运行时数据（已被 git 忽略）
@@ -223,6 +246,23 @@ webterm/
 ```
 
 `GET /api/terminals` 的列表项带 `protocol` 字段；Telnet 终端的 `username` 恒为空串。对 Telnet 终端开 SFTP 返回 **400 `INVALID_CONFIG`**（Telnet 没有文件子系统）。
+
+### 端口转发与隧道（阶段 5）
+
+隧道挂在某个终端会话的 SSH 连接上，所有写操作都以 `terminalId` 指认宿主；列表接口是全局的 —— 用户关心的是「我一共开了哪些隧道」。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/tunnels` | 全局隧道列表（运行中的排前面） |
+| `GET /api/terminals/:id/tunnels` | 某个终端的隧道；目标不是 SSH 会话返回 400 `INVALID_CONFIG` |
+| `POST /api/tunnels` | 创建并立即启动，请求体 `{ terminalId, spec }`；`spec` 是按 `type` 判别的联合：`local` / `remote`（带 `targetHost` / `targetPort`）与 `dynamic`（没有目标，端口由客户端逐次指定） |
+| `POST /api/tunnels/:id/start` | 启动 / 重启一条已停止的隧道 |
+| `POST /api/tunnels/:id/stop` | 停止（保留定义，可再次启动；与「删除」区分开） |
+| `DELETE /api/tunnels/:id` | 停止并移除 |
+
+错误码与状态码的对应关系：端口被占用 → **409 `PORT_IN_USE`**、无权监听 → **403 `PORT_DENIED`**、目标不可达 / 远端拒绝转发 → **502 `FORWARD_REJECTED`**、建通道超时 → **504 `FORWARD_TIMEOUT`**。响应的 `message` 里带具体端口与中文处置建议。
+
+隧道定义可以随会话记录落库（`session.tunnels`）：连接建立时自动启动，失败只在终端里给提示、**不阻断连接**。Telnet 记录不允许携带 `tunnels`（400 `VALIDATION_FAILED`）。
 
 ### 保险库 / 凭据 / 会话库（阶段 2）
 
@@ -312,6 +352,8 @@ MOCK_PORT=2224 node packages/server/dev/mock-ssh-server.mjs   # 目标 C
 # 会话里配置：主机 127.0.0.1:2224，跳板链填 2222 → 2223
 ```
 
+**验证远程转发（-R）**：本服务端接受 `tcpip-forward` / `cancel-tcpip-forward` 全局请求，并**真的在对应地址上监听**，再把每个入站连接通过 `forwarded-tcpip` 通道回送 —— 与真实 sshd 行为一致，因此 `-R` 链路可以端到端验证而不必假装成功。配合 WebTerm 的隧道面板（或 `ssh -R`）即可验证反向隧道。
+
 **验证密钥登录**：以公钥模式启动，并把公钥 base64 从 stdin 传入：
 
 ```bash
@@ -344,6 +386,8 @@ node packages/server/dev/mock-telnet-server.mjs
 - 凭据（密码、私钥口令）**任何时候都不明文落盘**；**Telnet 会话不进任何凭据** —— 口令由用户在终端里交互输入。
 - 服务默认只监听 `127.0.0.1`，开放到局域网需显式配置。
 - 会话配置是**按 `protocol` 判别的联合类型**，SSH / Telnet 的差异止步于类型与 UI 层，`TerminalSession` 之上（编码桥、背压、标签生命周期）完全共用一套实现。新增协议时按这个边界扩展。
+- 隧道规格同样是**按 `type` 判别的联合类型**（`local` / `remote` / `dynamic`）—— `dynamic` 没有目标地址，写成可选字段会让矛盾配置在类型上无法被发现。
+- 会话关闭时**先撤销隧道（含远端 `cancel-tcpip-forward`）、再断 SSH 连接** —— 顺序反了远端监听就撤不掉，端口会一直被占着。
 
 ---
 
@@ -356,16 +400,19 @@ node packages/server/dev/mock-telnet-server.mjs
 | 2 会话管理与持久化 | ✅ 已完成 |
 | 3 SFTP 文件传输 | ✅ 已完成 |
 | 4 Telnet 明文终端（插入交付） | ✅ 已完成 |
-| 5 ~ 9（端口转发 / 自动化 / 日志审计 / 体验打磨 / 插件打包） | 待开发 |
+| 5 端口转发与隧道 | ✅ 已完成 |
+| 6 ~ 9（自动化 / 日志审计 / 体验打磨 / 插件打包） | 待开发 |
 
 ### 自动化端到端验证
 
 | 套件 | 脚本 | 结果 |
 | --- | --- | --- |
-| 阶段 2 服务端 | `data/tmp/e2e-phase2.mjs` | 35/35 |
+| 阶段 2 服务端 | `data/tmp/e2e-phase2.mjs` | 36/36 |
 | 阶段 3 服务端 | `data/tmp/e2e-phase3.mjs` | 75/75 |
 | 阶段 3 浏览器 | `data/tmp/e2e-browser-p3.mjs` | 55/55 |
 | 阶段 4 Telnet 服务端 | `data/tmp/e2e-telnet.mjs` | 53/53 |
 | 阶段 4 Telnet 浏览器 | `data/tmp/e2e-browser-telnet.mjs` | 80/80 |
+| 阶段 5 隧道服务端 | `data/tmp/e2e-tunnel.mjs` | 65/65 |
+| 阶段 5 隧道浏览器 | `data/tmp/e2e-browser-tunnel.mjs` | 97/97 |
 
 运行方式（含端口分配与 `NODE_PATH` 等前置条件）见 [`docs/03-测试指南.md`](docs/03-测试指南.md)。

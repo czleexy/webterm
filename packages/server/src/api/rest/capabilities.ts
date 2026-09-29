@@ -9,6 +9,7 @@ import type { CapabilitiesResponse } from '@webterm/shared'
 import {
   BACKPRESSURE_HIGH_WATER_MARK,
   BACKPRESSURE_LOW_WATER_MARK,
+  CONNECTION_PROTOCOLS,
   SUPPORTED_ENCODINGS,
 } from '@webterm/shared'
 import { describeProfiles, getSsh2Version } from '../../ssh/algorithms.js'
@@ -20,6 +21,7 @@ export const capabilityRoutes: FastifyPluginAsync = async (app) => {
       nodeVersion: process.version,
       profiles: describeProfiles(),
       supportedEncodings: [...SUPPORTED_ENCODINGS],
+      supportedProtocols: [...CONNECTION_PROTOCOLS],
       backpressureHighWaterMark: BACKPRESSURE_HIGH_WATER_MARK,
       backpressureLowWaterMark: BACKPRESSURE_LOW_WATER_MARK,
     }

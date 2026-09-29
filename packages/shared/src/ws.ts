@@ -8,6 +8,7 @@
  *
  * 因此前端不需要解析二进制帧的内容，直接写入 xterm；控制消息才走 JSON。
  */
+import type { ConnectionProtocol } from './constants.js'
 
 /** 客户端 → 服务端的控制消息 */
 export type ClientControlMessage =
@@ -78,10 +79,13 @@ export type TerminalErrorCode =
 
 /** 建连后回传给前端的协商信息，用于「连接信息」面板展示 */
 export interface TerminalNegotiationInfo {
+  /** 连接协议；telnet 时下方 SSH 专有字段统一为 '—' */
+  protocol: ConnectionProtocol
   host: string
   port: number
+  /** Telnet 无登录名，恒为空串 */
   username: string
-  /** 服务端软件标识串，如 SSH-2.0-OpenSSH_9.5 */
+  /** 服务端软件标识串，如 SSH-2.0-OpenSSH_9.5；Telnet 通常为空 */
   serverIdent: string
   /** 实际协商出的密钥交换算法 */
   kex: string
@@ -101,6 +105,27 @@ export interface TerminalNegotiationInfo {
   encoding: string
   cols: number
   rows: number
+  /**
+   * Telnet 选项协商结果，仅 telnet 存在；用于排障
+   * （例如「设备没打开回显」导致看起来像键盘失灵）
+   */
+  telnetOptions?: TelnetNegotiationSummary
+}
+
+/** Telnet 协商结果摘要 */
+export interface TelnetNegotiationSummary {
+  /** 远端是否负责回显（WILL ECHO）——为 false 时由本端做本地回显 */
+  remoteEcho: boolean
+  /** 是否协商成功「抑制继续」 */
+  suppressGoAhead: boolean
+  /** 远端是否索要了终端类型 */
+  terminalTypeRequested: boolean
+  /** 是否上报了窗口尺寸（NAWS） */
+  windowSizeReported: boolean
+  /** 协商中被双方确认启用的远端选项名列表，排障用 */
+  remoteOptions: string[]
+  /** 协商中被双方确认启用的本端选项名列表，排障用 */
+  localOptions: string[]
 }
 
 /** 运行时校验：判断文本帧内容是否为合法的服务端控制消息 */

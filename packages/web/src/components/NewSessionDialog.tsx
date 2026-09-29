@@ -5,18 +5,27 @@
  * 把协商算法、主机密钥指纹、以及远端是否允许开启会话都提前告诉用户。
  * 这样「连不上」和「连上了但不让登录」能被清楚地区分开 ——
  * 后者在真实的老旧网络设备上非常常见。
+ *
+ * 支持 SSH 与 Telnet 两种协议：
+ * - SSH：本机完成握手与认证，因此需要用户名 + 凭据，可开 SFTP。
+ * - Telnet：没有认证阶段（登录是在终端里逐行交互完成的），因此**不收集任何凭据**，
+ *   只填主机与端口；协议本身明文，界面上必须给出明确警示。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  DEFAULT_PORTS,
   DEFAULT_TERM,
   DEFAULT_TERM_COLS,
   DEFAULT_TERM_ROWS,
+  PROTOCOL_LABEL,
   SUPPORTED_ENCODINGS,
   type AuthMethod,
+  type ConnectionProtocol,
   type ProbeSessionResponse,
   type SessionConfig,
-  type SupportedEncoding,
   type SshTarget,
+  type SupportedEncoding,
+  type TelnetTarget,
 } from '@webterm/shared'
 import { ApiRequestError, probeSession } from '../api/client'
 import { cn } from '../utils/cn'
@@ -37,7 +46,7 @@ const LEGACY_LABEL: Record<LegacyCompat, string> = {
   never: '仅现代算法（更安全）',
 }
 
-/** 连接用途：终端会话，或直接开一个 SFTP 文件传输标签 */
+/** 连接用途：终端会话，或直接开一个 SFTP 文件传输标签（仅 SSH） */
 export type ConnectMode = 'terminal' | 'sftp'
 
 export interface NewSessionDialogProps {
@@ -49,6 +58,7 @@ export interface NewSessionDialogProps {
 }
 
 interface FormState {
+  protocol: ConnectionProtocol
   host: string
   port: string
   username: string
@@ -63,8 +73,9 @@ interface FormState {
 }
 
 const INITIAL_FORM: FormState = {
+  protocol: 'ssh',
   host: '',
-  port: '22',
+  port: String(DEFAULT_PORTS.ssh),
   username: '',
   authMethod: 'password',
   password: '',
@@ -77,10 +88,10 @@ const INITIAL_FORM: FormState = {
 }
 
 /** 把表单值转成后端要求的 SshTarget */
-function toTarget(form: FormState): SshTarget {
+function toSshTarget(form: FormState): SshTarget {
   const base: SshTarget = {
     host: form.host.trim(),
-    port: Number.parseInt(form.port, 10) || 22,
+    port: Number.parseInt(form.port, 10) || DEFAULT_PORTS.ssh,
     username: form.username.trim(),
     authMethod: form.authMethod,
   }
@@ -91,6 +102,14 @@ function toTarget(form: FormState): SshTarget {
     if (form.passphrase) base.passphrase = form.passphrase
   }
   return base
+}
+
+/** Telnet 目标只有主机与端口：协议本身没有认证阶段，凭据一律不进配置 */
+function toTelnetTarget(form: FormState): TelnetTarget {
+  return {
+    host: form.host.trim(),
+    port: Number.parseInt(form.port, 10) || DEFAULT_PORTS.telnet,
+  }
 }
 
 export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSessionDialogProps) {
@@ -130,28 +149,56 @@ export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSe
     setError(null)
   }, [])
 
+  /**
+   * 切换协议。
+   * 端口只在「当前值仍是上一协议的默认端口」时才跟随切换 ——
+   * 用户手改过端口（比如 2323 的 Telnet）就不该被覆盖掉。
+   * Telnet 没有 SFTP 子系统，因此同时把用途强制切回终端。
+   */
+  const switchProtocol = useCallback((next: ConnectionProtocol) => {
+    setForm((prev) => ({
+      ...prev,
+      protocol: next,
+      port:
+        prev.port === String(DEFAULT_PORTS[prev.protocol]) ? String(DEFAULT_PORTS[next]) : prev.port,
+    }))
+    setProbe(null)
+    setError(null)
+    if (next === 'telnet') setMode('terminal')
+  }, [])
+
+  const isTelnet = form.protocol === 'telnet'
+
   /** 前端预校验，避免把明显不合法的请求发到后端再报错 */
   const validationError = useMemo(() => {
     if (!form.host.trim()) return '请填写主机地址'
     if (/\s/.test(form.host)) return '主机地址不能包含空格'
-    if (form.host.includes('://')) return '主机地址不要带 ssh:// 前缀'
+    if (form.host.includes('://')) return '主机地址不要带 ssh:// 或 telnet:// 前缀'
     const port = Number.parseInt(form.port, 10)
     if (!Number.isInteger(port) || port < 1 || port > 65535) return '端口需为 1~65535 的整数'
-    if (!form.username.trim()) return '请填写用户名'
-    if (form.authMethod === 'password' && !form.password) return '请填写登录口令'
-    if (form.authMethod === 'privateKey' && !form.privateKey.trim()) return '请粘贴私钥内容'
+    // 以下只有 SSH 需要：Telnet 的登录名与口令都在终端里交互输入
+    if (!isTelnet) {
+      if (!form.username.trim()) return '请填写用户名'
+      if (form.authMethod === 'password' && !form.password) return '请填写登录口令'
+      if (form.authMethod === 'privateKey' && !form.privateKey.trim()) return '请粘贴私钥内容'
+    }
     return null
-  }, [form])
+  }, [form, isTelnet])
 
   const buildConfig = useCallback((): SessionConfig => {
+    const terminal = {
+      cols: DEFAULT_TERM_COLS,
+      rows: DEFAULT_TERM_ROWS,
+      encoding: form.encoding,
+      term: form.term.trim() || DEFAULT_TERM,
+    }
+    if (form.protocol === 'telnet') {
+      return { protocol: 'telnet', target: toTelnetTarget(form), terminal }
+    }
     return {
-      target: toTarget(form),
-      terminal: {
-        cols: DEFAULT_TERM_COLS,
-        rows: DEFAULT_TERM_ROWS,
-        encoding: form.encoding,
-        term: form.term.trim() || DEFAULT_TERM,
-      },
+      protocol: 'ssh',
+      target: toSshTarget(form),
+      terminal,
       legacyCompat: form.legacyCompat,
     }
   }, [form])
@@ -165,10 +212,11 @@ export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSe
     setError(null)
     setProbe(null)
     try {
-      const result = await probeSession({
-        target: toTarget(form),
-        legacyCompat: form.legacyCompat,
-      })
+      const result = await probeSession(
+        form.protocol === 'telnet'
+          ? { protocol: 'telnet', target: toTelnetTarget(form) }
+          : { protocol: 'ssh', target: toSshTarget(form), legacyCompat: form.legacyCompat },
+      )
       setProbe(result)
     } catch (err) {
       const message =
@@ -188,48 +236,76 @@ export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSe
       setError(validationError)
       return
     }
-    onSubmit(buildConfig(), form.title.trim(), mode)
-  }, [buildConfig, form.title, mode, onSubmit, validationError])
+    onSubmit(buildConfig(), form.title.trim(), isTelnet ? 'terminal' : mode)
+  }, [buildConfig, form.title, isTelnet, mode, onSubmit, validationError])
 
   if (!open) return null
+
+  const title = isTelnet ? '新建 Telnet 连接' : mode === 'sftp' ? '新建 SFTP 文件传输' : '新建 SSH 连接'
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-[8vh] backdrop-blur-sm">
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="新建 SSH 连接"
+        aria-label={title}
         className="w-full max-w-2xl rounded-xl border border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900"
       >
         <div className="flex items-center justify-between border-b border-neutral-200 px-5 py-3 dark:border-neutral-800">
-          <h2 className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-            {mode === 'sftp' ? '新建 SFTP 文件传输' : '新建 SSH 连接'}
-          </h2>
           <div className="flex items-center gap-3">
-            {/* 用途切换：同一条 SSH 连接既能开终端也能开文件传输 */}
+            <h2 className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{title}</h2>
+            {/* 协议选择：决定后续表单的形状与可用的用途 */}
             <div className="flex rounded-md border border-neutral-200 p-0.5 dark:border-neutral-700">
-              {(
-                [
-                  ['terminal', '终端'],
-                  ['sftp', 'SFTP 文件'],
-                ] as const
-              ).map(([value, label]) => (
+              {(['ssh', 'telnet'] as const).map((value) => (
                 <button
                   key={value}
                   type="button"
-                  data-testid={`mode-${value}`}
-                  onClick={() => setMode(value)}
+                  data-testid={`protocol-${value}`}
+                  onClick={() => switchProtocol(value)}
+                  title={
+                    value === 'telnet'
+                      ? '明文协议，仅建议在受信网络使用'
+                      : '加密协议，支持密钥认证与 SFTP'
+                  }
                   className={cn(
                     'rounded px-2 py-0.5 text-[11px] transition-colors',
-                    mode === value
+                    form.protocol === value
                       ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
                       : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100',
                   )}
                 >
-                  {label}
+                  {PROTOCOL_LABEL[value]}
                 </button>
               ))}
             </div>
+          </div>
+          <div className="flex items-center gap-3">
+            {/* 用途切换：同一条 SSH 连接既能开终端也能开文件传输；Telnet 只有终端 */}
+            {isTelnet ? null : (
+              <div className="flex rounded-md border border-neutral-200 p-0.5 dark:border-neutral-700">
+                {(
+                  [
+                    ['terminal', '终端'],
+                    ['sftp', 'SFTP 文件'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    data-testid={`mode-${value}`}
+                    onClick={() => setMode(value)}
+                    className={cn(
+                      'rounded px-2 py-0.5 text-[11px] transition-colors',
+                      mode === value
+                        ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                        : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -249,6 +325,18 @@ export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSe
         </div>
 
         <div className="max-h-[64vh] overflow-y-auto px-5 py-4">
+          {isTelnet ? (
+            <div
+              data-testid="telnet-warning"
+              className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+            >
+              <b className="font-medium">Telnet 是明文协议</b>
+              ：登录名、口令与全部会话内容都会以明文经过网络。
+              登录过程在本终端里交互完成，因此这里不需要也不应该填写凭据；
+              请仅在受信网络中使用，条件允许时优先改用 SSH。
+            </div>
+          ) : null}
+
           {/* 主机与认证 */}
           <Section title="连接目标">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_100px]">
@@ -276,97 +364,103 @@ export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSe
             </div>
 
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="用户名" required>
-                <input
-                  name="username"
-                  value={form.username}
-                  onChange={(e) => patch({ username: e.target.value })}
-                  placeholder="root"
-                  spellCheck={false}
-                  autoComplete="off"
-                  className={inputClass}
-                />
-              </Field>
+              {isTelnet ? null : (
+                <Field label="用户名" required>
+                  <input
+                    name="username"
+                    value={form.username}
+                    onChange={(e) => patch({ username: e.target.value })}
+                    placeholder="root"
+                    spellCheck={false}
+                    autoComplete="off"
+                    className={inputClass}
+                  />
+                </Field>
+              )}
               <Field label="标签标题">
                 <input
                   name="title"
                   value={form.title}
                   onChange={(e) => patch({ title: e.target.value })}
-                  placeholder="留空则使用 用户名@主机"
+                  placeholder={
+                    isTelnet ? '留空则使用 主机[:端口]' : '留空则使用 用户名@主机'
+                  }
                   className={inputClass}
                 />
               </Field>
             </div>
           </Section>
 
-          {/* 认证方式 */}
-          <Section title="认证方式">
-            <div className="flex gap-2">
-              {(
-                [
-                  ['password', '口令'],
-                  ['privateKey', '私钥'],
-                ] as const
-              ).map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => patch({ authMethod: value })}
-                  className={cn(
-                    'rounded-md border px-3 py-1 text-xs transition-colors',
-                    form.authMethod === value
-                      ? 'border-neutral-900 bg-neutral-900 text-white dark:border-neutral-100 dark:bg-neutral-100 dark:text-neutral-900'
-                      : 'border-neutral-200 text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800',
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+          {/* 认证方式：Telnet 没有认证阶段，整段不显示 */}
+          {isTelnet ? null : (
+            <Section title="认证方式">
+              <div className="flex gap-2">
+                {(
+                  [
+                    ['password', '口令'],
+                    ['privateKey', '私钥'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => patch({ authMethod: value })}
+                    className={cn(
+                      'rounded-md border px-3 py-1 text-xs transition-colors',
+                      form.authMethod === value
+                        ? 'border-neutral-900 bg-neutral-900 text-white dark:border-neutral-100 dark:bg-neutral-100 dark:text-neutral-900'
+                        : 'border-neutral-200 text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
 
-            {form.authMethod === 'password' ? (
-              <div className="mt-3">
-                <Field label="登录口令" required>
-                  <input
-                    name="password"
-                    type="password"
-                    value={form.password}
-                    onChange={(e) => patch({ password: e.target.value })}
-                    autoComplete="new-password"
-                    className={inputClass}
-                  />
-                </Field>
-                <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
-                  口令仅在本次连接时经本机后端转发，不会写入浏览器存储；
-                  需要复用可保存到会话库（凭据由主密码保险库以 AES-256-GCM 加密存储）。
-                </p>
-              </div>
-            ) : (
-              <div className="mt-3 space-y-3">
-                <Field label="私钥内容（OpenSSH / PEM）" required>
-                  <textarea
-                    name="privateKey"
-                    value={form.privateKey}
-                    onChange={(e) => patch({ privateKey: e.target.value })}
-                    rows={5}
-                    spellCheck={false}
-                    placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n…'}
-                    className={cn(inputClass, 'resize-y font-mono text-[11px] leading-relaxed')}
-                  />
-                </Field>
-                <Field label="私钥口令（若已加密）">
-                  <input
-                    name="passphrase"
-                    type="password"
-                    value={form.passphrase}
-                    onChange={(e) => patch({ passphrase: e.target.value })}
-                    autoComplete="new-password"
-                    className={inputClass}
-                  />
-                </Field>
-              </div>
-            )}
-          </Section>
+              {form.authMethod === 'password' ? (
+                <div className="mt-3">
+                  <Field label="登录口令" required>
+                    <input
+                      name="password"
+                      type="password"
+                      value={form.password}
+                      onChange={(e) => patch({ password: e.target.value })}
+                      autoComplete="new-password"
+                      className={inputClass}
+                    />
+                  </Field>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+                    口令仅在本次连接时经本机后端转发，不会写入浏览器存储；
+                    需要复用可保存到会话库（凭据由主密码保险库以 AES-256-GCM 加密存储）。
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  <Field label="私钥内容（OpenSSH / PEM）" required>
+                    <textarea
+                      name="privateKey"
+                      value={form.privateKey}
+                      onChange={(e) => patch({ privateKey: e.target.value })}
+                      rows={5}
+                      spellCheck={false}
+                      placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n…'}
+                      className={cn(inputClass, 'resize-y font-mono text-[11px] leading-relaxed')}
+                    />
+                  </Field>
+                  <Field label="私钥口令（若已加密）">
+                    <input
+                      name="passphrase"
+                      type="password"
+                      value={form.passphrase}
+                      onChange={(e) => patch({ passphrase: e.target.value })}
+                      autoComplete="new-password"
+                      className={inputClass}
+                    />
+                  </Field>
+                </div>
+              )}
+            </Section>
+          )}
 
           {/* 终端与兼容性：SFTP 模式不需要终端编码与 TERM */}
           <Section title={mode === 'sftp' ? '连接兼容性' : '终端与兼容性'}>
@@ -386,7 +480,7 @@ export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSe
                     ))}
                   </select>
                 </Field>
-                <Field label="TERM 类型">
+                <Field label={isTelnet ? 'TERM 类型（经 TERMINAL-TYPE 上报）' : 'TERM 类型'}>
                   <input
                     name="term"
                     value={form.term}
@@ -398,26 +492,33 @@ export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSe
               </div>
             ) : null}
 
-            <div className={cn(mode === 'terminal' && 'mt-3')}>
-              <Field label="算法兼容策略">
-                <select
-                  name="legacyCompat"
-                  value={form.legacyCompat}
-                  onChange={(e) => patch({ legacyCompat: e.target.value as LegacyCompat })}
-                  className={inputClass}
-                >
-                  {(Object.keys(LEGACY_LABEL) as LegacyCompat[]).map((key) => (
-                    <option key={key} value={key}>
-                      {LEGACY_LABEL[key]}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
-                老旧的交换机 / 路由器通常只支持 SHA-1 类算法。
-                选择「自动」时会先尝试现代算法，协商失败后自动降级，无需手动判断设备型号。
+            {isTelnet ? (
+              <p className={cn('text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400', mode === 'terminal' && 'mt-3')}>
+                老设备常用 GBK / GB18030 输出，选错编码会出现乱码。
+                窗口尺寸通过 NAWS 选项上报；若设备不回显（WILL ECHO 未协商成功），本端会自动做本地回显。
               </p>
-            </div>
+            ) : (
+              <div className={cn(mode === 'terminal' && 'mt-3')}>
+                <Field label="算法兼容策略">
+                  <select
+                    name="legacyCompat"
+                    value={form.legacyCompat}
+                    onChange={(e) => patch({ legacyCompat: e.target.value as LegacyCompat })}
+                    className={inputClass}
+                  >
+                    {(Object.keys(LEGACY_LABEL) as LegacyCompat[]).map((key) => (
+                      <option key={key} value={key}>
+                        {LEGACY_LABEL[key]}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+                  老旧的交换机 / 路由器通常只支持 SHA-1 类算法。
+                  选择「自动」时会先尝试现代算法，协商失败后自动降级，无需手动判断设备型号。
+                </p>
+              </div>
+            )}
           </Section>
 
           {/* 校验与探测结果 */}
@@ -459,7 +560,7 @@ export function NewSessionDialog({ open, onClose, initialMode, onSubmit }: NewSe
             onClick={handleSubmit}
             className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white"
           >
-            {mode === 'sftp' ? '打开文件传输' : '连接'}
+            {mode === 'sftp' && !isTelnet ? '打开文件传输' : '连接'}
           </button>
         </div>
       </div>
@@ -501,11 +602,12 @@ function Field({
   )
 }
 
-/** 探测结果面板 */
+/** 探测结果面板。SSH 与 Telnet 能回答的问题不同，因此分两套展示。 */
 function ProbeResult({ probe }: { probe: ProbeSessionResponse }) {
-  const { negotiation } = probe
+  // Telnet 没有 shell 概念，也就无所谓「远端拒绝开会话」
+  const isTelnet = probe.protocol === 'telnet'
   const hasBlockingWarning = probe.warnings.some((w) => w.includes('拒绝开启终端会话'))
-  const allowShell = !hasBlockingWarning
+  const allowShell = isTelnet || !hasBlockingWarning
 
   return (
     <div className="mt-4 rounded-lg border border-neutral-200 dark:border-neutral-800">
@@ -517,23 +619,54 @@ function ProbeResult({ probe }: { probe: ProbeSessionResponse }) {
             : 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400',
         )}
       >
-        <span>{allowShell ? '连接与认证正常，远端允许开启终端会话' : '认证成功，但远端拒绝开启终端会话'}</span>
+        <span>
+          {isTelnet
+            ? 'TCP 端口可达，设备已响应'
+            : allowShell
+              ? '连接与认证正常，远端允许开启终端会话'
+              : '认证成功，但远端拒绝开启终端会话'}
+        </span>
         <span className="ml-auto font-mono font-normal opacity-70">{probe.elapsedMs} ms</span>
       </div>
 
-      <dl className="grid grid-cols-1 gap-x-4 gap-y-1.5 px-3 py-2.5 sm:grid-cols-2">
-        <Row label="服务端标识" value={probe.serverIdent || '（未提供）'} />
-        <Row label="认证方式" value={probe.authMethod} />
-        <Row label="密钥交换" value={negotiation.kex} />
-        <Row label="主机密钥算法" value={negotiation.hostKeyAlgorithm} />
-        <Row label="加密算法" value={negotiation.cipher} />
-        <Row label="MAC 算法" value={negotiation.mac} />
-        <Row
-          label="算法档案"
-          value={negotiation.profile + (negotiation.legacy ? '（legacy）' : '（modern）')}
-        />
-        <Row label="主机密钥指纹" value={probe.hostKeyFingerprint} mono />
-      </dl>
+      {isTelnet ? (
+        <>
+          <dl className="grid grid-cols-1 gap-x-4 gap-y-1.5 px-3 py-2.5 sm:grid-cols-2">
+            <Row label="协议" value="Telnet（明文）" />
+            <Row label="服务端标识" value={probe.serverIdent || '（Telnet 无版本串）'} />
+          </dl>
+          <div className="border-t border-neutral-200 px-3 py-2.5 dark:border-neutral-800">
+            <div className="text-[11px] text-neutral-400 dark:text-neutral-500">设备欢迎语</div>
+            {probe.banner ? (
+              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded border border-neutral-200 bg-neutral-50 px-2 py-1.5 font-mono text-[11px] leading-relaxed text-neutral-700 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-300">
+                {probe.banner}
+              </pre>
+            ) : (
+              <div className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                设备未主动输出内容。多数 Telnet 设备要等按下回车才会显示登录提示，这不代表异常。
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <dl className="grid grid-cols-1 gap-x-4 gap-y-1.5 px-3 py-2.5 sm:grid-cols-2">
+          <Row label="服务端标识" value={probe.serverIdent || '（未提供）'} />
+          <Row label="认证方式" value={probe.authMethod} />
+          <Row label="密钥交换" value={probe.negotiation?.kex ?? '—'} />
+          <Row label="主机密钥算法" value={probe.negotiation?.hostKeyAlgorithm ?? '—'} />
+          <Row label="加密算法" value={probe.negotiation?.cipher ?? '—'} />
+          <Row label="MAC 算法" value={probe.negotiation?.mac ?? '—'} />
+          <Row
+            label="算法档案"
+            value={
+              probe.negotiation
+                ? probe.negotiation.profile + (probe.negotiation.legacy ? '（legacy）' : '（modern）')
+                : '—'
+            }
+          />
+          <Row label="主机密钥指纹" value={probe.hostKeyFingerprint ?? '—'} mono />
+        </dl>
+      )}
 
       {probe.warnings.length > 0 ? (
         <ul className="space-y-1 border-t border-neutral-200 px-3 py-2.5 dark:border-neutral-800">

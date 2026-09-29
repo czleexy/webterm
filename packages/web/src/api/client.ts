@@ -15,7 +15,10 @@ import {
   type ProbeSessionRequest,
   type ProbeSessionResponse,
   type SessionConfig,
+  type SshSessionConfig,
   type SshTarget,
+  type TelnetSessionConfig,
+  type TelnetTarget,
   type UpdateCredentialRequest,
   type UpdateLibraryNodeRequest,
   type VaultStatusResponse,
@@ -181,4 +184,11 @@ export function buildTerminalWsUrl(wsPath: string, attachToken: string): string 
 }
 
 /** 便捷类型导出，供组件直接引用 */
-export type { SessionConfig, SshTarget, CreateTerminalResponse }
+export type {
+  SessionConfig,
+  SshSessionConfig,
+  TelnetSessionConfig,
+  SshTarget,
+  TelnetTarget,
+  CreateTerminalResponse,
+}

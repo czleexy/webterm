@@ -1,7 +1,10 @@
 /**
  * REST 接口的请求 / 响应契约。
  * 阶段 1 新增：连接探测与终端会话创建。
+ * 阶段 4 新增：Telnet（按 protocol 判别的会话配置）。
  */
+import type { ConnectionProtocol } from './constants.js'
+import { DEFAULT_PORTS } from './constants.js'
 
 /** 统一错误响应体 */
 export interface ApiError {
@@ -46,17 +49,41 @@ export interface SshTarget {
   passphrase?: string
 }
 
+/**
+ * Telnet 目标。
+ *
+ * 与 SSH 的关键差异：Telnet 没有认证阶段，用户名与口令都是连接建立之后
+ * 由设备在终端里逐行索要的普通文本。因此这里**不带任何凭据字段** ——
+ * 让用户把口令交给一个连加密都没有的协议去传输，本来就已经是权衡后的选择，
+ * 更不该把它写进配置或落盘。登录过程完全在终端里交互完成。
+ */
+export interface TelnetTarget {
+  host: string
+  port: number
+}
+
 /** 终端外观与编码设置 */
 export interface TerminalOptions {
   cols: number
   rows: number
   /** 远端字节流的字符编码 */
   encoding: 'utf8' | 'gbk' | 'gb18030' | 'big5' | 'latin1'
-  /** 传给远端的 TERM 环境变量值 */
+  /** 传给远端的 TERM 环境变量值（Telnet 下通过 TERMINAL-TYPE 选项上报） */
   term: string
 }
 
-export interface SessionConfig {
+/** 算法兼容策略，仅 SSH 有意义 */
+export type LegacyCompat = 'auto' | 'always' | 'never'
+
+/**
+ * 会话配置按协议判别。
+ *
+ * 之所以用判别联合而不是「一堆可选字段」：两者的连接参数形状确实不同
+ * （SSH 要用户名与凭据，Telnet 只要主机端口），用可选字段会让
+ * 「telnet 却带了私钥」「ssh 却没带用户名」这类非法组合在类型上无法被发现。
+ */
+export interface SshSessionConfig {
+  protocol: 'ssh'
   target: SshTarget
   terminal: TerminalOptions
   /**
@@ -65,7 +92,38 @@ export interface SessionConfig {
    * always = 直接使用 legacy 档案
    * never = 只用现代算法，协商失败即报错
    */
-  legacyCompat?: 'auto' | 'always' | 'never'
+  legacyCompat?: LegacyCompat
+}
+
+export interface TelnetSessionConfig {
+  protocol: 'telnet'
+  target: TelnetTarget
+  terminal: TerminalOptions
+}
+
+export type SessionConfig = SshSessionConfig | TelnetSessionConfig
+
+/** 判别联合的类型收窄助手：缺省视为 ssh（兼容旧数据与旧脚本） */
+export function protocolOf(config: { protocol?: ConnectionProtocol }): ConnectionProtocol {
+  return config.protocol ?? 'ssh'
+}
+
+/** 展示用登录名：Telnet 没有登录名这一层，恒为空串 */
+export function targetUsername(config: SessionConfig): string {
+  return config.protocol === 'telnet' ? '' : config.target.username
+}
+
+/**
+ * 由连接配置推导一个默认标题，前后端共用同一份规则，避免标签上出现两种格式。
+ * SSH：`user@host`（22 端口省略）；Telnet：`host`（23 端口省略，没有用户名可显示）。
+ */
+export function targetLabel(config: SessionConfig): string {
+  const { host, port } = config.target
+  if (config.protocol === 'telnet') {
+    return port === DEFAULT_PORTS.telnet ? host : `${host}:${port}`
+  }
+  const suffix = port === DEFAULT_PORTS.ssh ? '' : `:${port}`
+  return `${config.target.username}@${host}${suffix}`
 }
 
 /* ------------------------------------------------------------------ */
@@ -73,32 +131,46 @@ export interface SessionConfig {
 /* ------------------------------------------------------------------ */
 
 export interface ProbeSessionRequest {
-  target: SshTarget
-  legacyCompat?: 'auto' | 'always' | 'never'
+  /** 快速连接时直传目标；与 sessionId 二选一 */
+  target?: SshTarget | TelnetTarget
+  /** 引用会话库中的会话 */
+  sessionId?: string
+  /** 仅 SSH 模式生效 */
+  legacyCompat?: LegacyCompat
+  /** 目标协议；缺省 ssh */
+  protocol?: ConnectionProtocol
+}
+
+/** SSH 探测得到的算法协商详情；Telnet 无此信息 */
+export interface ProbeSshNegotiation {
+  kex: string
+  hostKeyAlgorithm: string
+  cipher: string
+  mac: string
+  profile: string
+  legacy: boolean
 }
 
 export interface ProbeSessionResponse {
   ok: boolean
+  /** 实际使用的协议 */
+  protocol: ConnectionProtocol
   /** 握手与认证耗时（毫秒） */
   elapsedMs: number
-  /** 服务端标识串 */
+  /** 服务端标识串（SSH 为版本串；Telnet 通常为空） */
   serverIdent: string
-  /** 命中认证方式，如 password */
+  /** 命中认证方式，如 password；Telnet 恒为 none */
   authMethod: string
-  /** 实际协商算法摘要 */
-  negotiation: {
-    kex: string
-    hostKeyAlgorithm: string
-    cipher: string
-    mac: string
-    profile: string
-    legacy: boolean
-  }
-  /** 主机密钥指纹（SHA256:base64） */
-  hostKeyFingerprint: string
+  /** 仅 SSH 存在 */
+  negotiation?: ProbeSshNegotiation
+  /** 仅 SSH 存在：主机密钥指纹（SHA256:base64） */
+  hostKeyFingerprint?: string
+  /** Telnet 探测时读到的欢迎语（可能为空） */
+  banner?: string
   /** 探测过程中发现的限制（如远端拒绝开启会话），非致命 */
   warnings: string[]
 }
+
 
 /* ------------------------------------------------------------------ */
 /* /api/terminals —— 终端会话生命周期                                   */
@@ -140,8 +212,10 @@ export interface TerminalNegotiationSummary {
 export interface TerminalListItem {
   terminalId: string
   title: string
+  protocol: ConnectionProtocol
   host: string
   port: number
+  /** Telnet 无登录名，恒为空串 */
   username: string
   /** 是否已有 WebSocket 客户端附加 */
   attached: boolean
@@ -246,18 +320,28 @@ export interface JumpHop {
   legacyCompat?: 'auto' | 'always' | 'never'
 }
 
-/** 会话节点的可连接配置 */
+/**
+ * 会话节点的可连接配置。
+ *
+ * 用「扁平 + 按协议可缺省」而不是判别联合：这份结构会整块 JSON 落进 SQLite，
+ * 还要兼容阶段 2 之前写入的、完全没有 protocol 字段的旧记录，
+ * 联合类型在读取老数据时反而要写一堆类型断言。协议相关的必填性由 zod 在写入时把关。
+ */
 export interface SessionRecord {
+  /** 连接协议；旧记录缺省视为 ssh */
+  protocol?: ConnectionProtocol
   host: string
   port: number
-  username: string
-  /** 认证凭据引用（保险库中的凭据 id） */
-  credentialId: string
+  /** 仅 SSH 必填；Telnet 的登录名在终端里交互输入 */
+  username?: string
+  /** 仅 SSH 必填：认证凭据引用（保险库中的凭据 id） */
+  credentialId?: string
   encoding: SupportedEncodingLiteral
   term: string
-  legacyCompat: 'auto' | 'always' | 'never'
-  /** 跳板链，按连接顺序排列；最后一跳之后连接 record.host */
-  jumpChain: JumpHop[]
+  /** 仅 SSH 有意义 */
+  legacyCompat?: 'auto' | 'always' | 'never'
+  /** 仅 SSH 有意义：跳板链，按连接顺序排列；最后一跳之后连接 record.host */
+  jumpChain?: JumpHop[]
 }
 
 export type SupportedEncodingLiteral = 'utf8' | 'gbk' | 'gb18030' | 'big5' | 'latin1'
@@ -309,6 +393,8 @@ export interface CapabilitiesResponse {
   /** 可用算法档案（按尝试顺序） */
   profiles: AlgorithmProfileInfo[]
   supportedEncodings: string[]
+  /** 支持的连接协议（ssh + telnet） */
+  supportedProtocols: ConnectionProtocol[]
   /** 单条终端输出的背压水位（字节） */
   backpressureHighWaterMark: number
   backpressureLowWaterMark: number

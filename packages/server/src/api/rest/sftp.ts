@@ -14,6 +14,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import {
   SFTP_PREVIEW_MAX_BYTES,
   WS_SFTP_PATH,
+  protocolOf,
   type CreateSftpSessionRequest,
   type CreateSftpSessionResponse,
   type CreateTransferRequest,
@@ -48,7 +49,7 @@ import {
   SftpTouchRequestSchema,
   TransferActionSchema,
 } from '../schemas.js'
-import { sendError, sendSshError, sendValidationError } from '../errors.js'
+import { sendError, sendTerminalError, sendValidationError } from '../errors.js'
 
 interface SftpParams {
   id: string
@@ -148,7 +149,7 @@ export const sftpRoutes: FastifyPluginAsync = async (app) => {
       }
       return reply.code(SFTP_STATUS_BY_CODE[err.code] ?? 500).send(body)
     }
-    if (err instanceof SshError) return sendSshError(reply, err)
+    if (err instanceof SshError) return sendTerminalError(reply, err)
     app.log.error({ err }, 'SFTP 操作失败')
     return sendError(reply, 500, 'INTERNAL', '文件操作时发生内部错误')
   }
@@ -174,11 +175,20 @@ export const sftpRoutes: FastifyPluginAsync = async (app) => {
     if (input.sessionId) {
       try {
         const { record } = app.library.getSessionRecord(input.sessionId)
+        // SFTP 是 SSH 的子协议，Telnet 那头没有等价能力
+        if (protocolOf(record) === 'telnet') {
+          return sendError(
+            reply,
+            400,
+            'INVALID_CONFIG',
+            'Telnet 不支持文件传输：Telnet 只提供终端数据流，没有文件子系统。请为该主机配置 SSH 会话。',
+          )
+        }
         const plan = app.sessionResolver.resolve(record)
         target = plan.target
         jumpChain = plan.jumpChain.length > 0 ? plan.jumpChain : undefined
-        legacyCompat = record.legacyCompat
-        title = title ?? defaultTitle(record.username, record.host, record.port)
+        legacyCompat = record.legacyCompat ?? 'auto'
+        title = title ?? defaultTitle(record.username ?? '', record.host, record.port)
       } catch (err) {
         if (err instanceof VaultError) return sendError(reply, 423, err.code, err.message)
         if (err instanceof LibraryError) {
@@ -195,11 +205,17 @@ export const sftpRoutes: FastifyPluginAsync = async (app) => {
     if (input.terminalId) {
       const terminal = app.terminals.get(input.terminalId)
       const client = terminal?.sshClient
-      if (terminal && client && target) {
+      // 只有 SSH 终端才有可借用的连接：Telnet 终端的 sshClient 恒为 undefined。
+      // 这里直接判 protocol 字段而不是调 protocolOf()，为的是让 TS 能把
+      // config.target 收窄成 SshTarget
+      const terminalConfig = terminal?.config
+      const terminalTarget =
+        terminalConfig?.protocol === 'ssh' ? terminalConfig.target : undefined
+      if (terminal && client && target && terminalTarget) {
         const sameTarget =
-          terminal.config.target.host === target.host &&
-          terminal.config.target.port === target.port &&
-          terminal.config.target.username === target.username
+          terminalTarget.host === target.host &&
+          terminalTarget.port === target.port &&
+          terminalTarget.username === target.username
         if (sameTarget) {
           borrowed = {
             terminalId: terminal.id,
@@ -249,7 +265,7 @@ export const sftpRoutes: FastifyPluginAsync = async (app) => {
       }
       return reply.code(201).send(response)
     } catch (err) {
-      if (err instanceof SshError) return sendSshError(reply, err)
+      if (err instanceof SshError) return sendTerminalError(reply, err)
       return handle(reply, err)
     }
   })

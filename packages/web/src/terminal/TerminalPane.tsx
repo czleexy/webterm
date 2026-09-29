@@ -21,6 +21,7 @@ import { useThemeStore } from '../theme/useTheme'
 import { terminalTheme } from './theme'
 import { useTerminalConnection } from './useTerminalConnection'
 import { cn } from '../utils/cn'
+import { PROTOCOL_CHIP_CLASS, protocolLabel } from '../utils/protocol'
 
 interface TerminalPaneProps {
   tab: TerminalTab
@@ -187,7 +188,14 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
   )
 
   return (
-    <div className={cn('h-full min-h-0 flex-col', active ? 'flex' : 'hidden')}>
+    <div
+      // 测试钩子：面板一律挂载（非活动的用 CSS 隐藏），因此外部需要能定位「当前活动的那个」
+      data-testid="terminal-pane"
+      data-active={active ? 'true' : 'false'}
+      data-protocol={tab.protocol}
+      data-status={tab.status}
+      className={cn('h-full min-h-0 flex-col', active ? 'flex' : 'hidden')}
+    >
       {banner ? (
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] leading-snug text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
           <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{banner}</span>
@@ -240,6 +248,7 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
       ) : null}
 
       <div className="flex shrink-0 items-center justify-end gap-2 border-b border-neutral-200 bg-neutral-50 px-3 py-1 dark:border-neutral-800 dark:bg-neutral-900">
+        <ConnectionInfo tab={tab} />
         <ToolbarButton onClick={() => setSearchOpen((v) => !v)}>搜索</ToolbarButton>
         <ToolbarButton
           onClick={() => {
@@ -281,5 +290,62 @@ function ToolbarButton({
     >
       {children}
     </button>
+  )
+}
+
+/**
+ * 左侧的协议徽标。
+ *
+ * Telnet 的协商结果（远端是否回显、NAWS 是否上报）是排障时最常需要的信息 ——
+ * 「键盘像失灵一样」十有八九是设备没打开回显。这些细节放在 title 里，
+ * 既不占版面又能随手看到。
+ */
+function ConnectionInfo({ tab }: { tab: TerminalTab }) {
+  const isTelnet = tab.protocol === 'telnet'
+  const opts = tab.telnetOptions
+
+  const detail = isTelnet
+    ? [
+        `协议：Telnet（明文）`,
+        tab.negotiation ? `服务端标识：${tab.negotiation.serverIdent || '（无）'}` : null,
+        `编码：${tab.config?.terminal.encoding ?? '（由会话库配置）'} · ${tab.dims.cols}×${tab.dims.rows}`,
+        opts ? `远端回显：${opts.remoteEcho ? '是' : '否（已启用本地回显）'}` : null,
+        opts ? `抑制继续（SGA）：${opts.suppressGoAhead ? '已协商' : '未协商'}` : null,
+        opts ? `终端类型请求：${opts.terminalTypeRequested ? '是' : '否'}` : null,
+        opts ? `窗口尺寸上报（NAWS）：${opts.windowSizeReported ? '是' : '否'}` : null,
+        opts && opts.remoteOptions.length > 0 ? `远端启用选项：${opts.remoteOptions.join(', ')}` : null,
+        opts && opts.localOptions.length > 0 ? `本端启用选项：${opts.localOptions.join(', ')}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : [
+        `协议：SSH`,
+        tab.negotiation ? `服务端标识：${tab.negotiation.serverIdent || '（无）'}` : null,
+        tab.negotiation ? `密钥交换：${tab.negotiation.kex}` : null,
+        tab.negotiation ? `主机密钥：${tab.negotiation.hostKeyAlgorithm}` : null,
+        tab.negotiation ? `加密：${tab.negotiation.cipher}` : null,
+        tab.negotiation ? `MAC：${tab.negotiation.mac}` : null,
+        tab.negotiation ? `算法档案：${tab.negotiation.profile}${tab.negotiation.legacy ? '（legacy）' : ''}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+  return (
+    <span className="mr-auto flex items-center gap-1.5">
+      <span
+        title={detail}
+        className={cn(
+          'cursor-help rounded border px-1.5 py-px text-[10px] leading-none',
+          PROTOCOL_CHIP_CLASS[tab.protocol],
+        )}
+      >
+        {protocolLabel(tab.protocol)}
+      </span>
+      {tab.dims ? (
+        <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
+          {tab.dims.cols}×{tab.dims.rows}
+        </span>
+      ) : null}
+    </span>
   )
 }

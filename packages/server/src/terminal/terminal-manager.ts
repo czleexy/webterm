@@ -7,7 +7,12 @@
  */
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { SessionConfig, SshTarget, TerminalListItem } from '@webterm/shared'
-import { TERMINAL_ATTACH_GRACE_MS, TERMINAL_IDLE_TIMEOUT_MS } from '@webterm/shared'
+import {
+  TERMINAL_ATTACH_GRACE_MS,
+  TERMINAL_IDLE_TIMEOUT_MS,
+  protocolOf,
+  targetUsername,
+} from '@webterm/shared'
 import { TerminalSession, type TerminalLogger } from './terminal-session.js'
 import type { KnownHostsStore } from '../ssh/known-hosts.js'
 
@@ -42,9 +47,10 @@ export class TerminalManager {
     return [...this.sessions.values()].map((s) => ({
       terminalId: s.id,
       title: s.title,
+      protocol: protocolOf(s.config),
       host: s.config.target.host,
       port: s.config.target.port,
-      username: s.config.target.username,
+      username: targetUsername(s.config),
       attached: s.attached,
       createdAt: s.createdAt.toISOString(),
       cols: s.dimensions.cols,

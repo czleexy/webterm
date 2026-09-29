@@ -101,6 +101,8 @@ export function useTerminalConnection({
               profile: msg.info.profile,
               legacy: msg.info.legacy,
             },
+            // Telnet 才有；SSH 时是 undefined，正好把陈旧值一并覆盖掉
+            telnetOptions: msg.info.telnetOptions,
           })
           // 就绪后立即同步一次尺寸，确保远端 PTY 与本地渲染一致
           if (term) sendControl({ t: 'resize', cols: term.cols, rows: term.rows })

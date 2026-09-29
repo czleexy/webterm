@@ -1,30 +1,34 @@
 /**
  * 终端会话管理接口。
  *
- * 注意分工：REST 负责「建立与销毁」终端（此时 SSH 连接已真实建立，
- * 因此认证失败、算法不兼容等错误能以标准 HTTP 状态码返回），
+ * 注意分工：REST 负责「建立与销毁」终端（此时连接已真实建立，
+ * 因此认证失败、算法不兼容、端口不通等错误能以标准 HTTP 状态码返回），
  * WebSocket 只负责「附加渲染端并转发字节流」。
+ *
+ * SSH 与 Telnet 共用这一组接口：两者的差异被收敛在 SessionConfig 的判别联合里，
+ * 装配路径只需要处理「凭据从哪来」这一件事。
  */
 import type { FastifyPluginAsync } from 'fastify'
 import type {
   CreateTerminalRequest,
   CreateTerminalResponse,
   ListTerminalsResponse,
+  SessionConfig,
   SshTarget,
   TerminalListItem,
 } from '@webterm/shared'
-import { DEFAULT_TERM_COLS, DEFAULT_TERM_ROWS, WS_PATH } from '@webterm/shared'
+import {
+  DEFAULT_TERM_COLS,
+  DEFAULT_TERM_ROWS,
+  WS_PATH,
+  protocolOf,
+  targetLabel,
+  targetUsername,
+} from '@webterm/shared'
 import { LibraryError } from '../../db/library.js'
 import { VaultError } from '../../security/vault.js'
-import { SshError } from '../../ssh/errors.js'
 import { CreateTerminalRequestSchema } from '../schemas.js'
-import { sendError, sendSshError, sendValidationError } from '../errors.js'
-
-/** 由配置推导一个默认标题，避免前端不传 title 时标签上出现空白 */
-function defaultTitle(host: string, port: number, username: string): string {
-  const suffix = port === 22 ? '' : `:${port}`
-  return `${username}@${host}${suffix}`
-}
+import { sendError, sendTerminalError, sendValidationError } from '../errors.js'
 
 export const terminalRoutes: FastifyPluginAsync = async (app) => {
   const manager = app.terminals
@@ -42,23 +46,36 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
 
     // 两条装配路径：sessionId（会话库引用，服务端解密凭据 + 组装跳板链）
     // 或 config（快速连接，前端直传，不落库）
-    let target = input.config?.target
-    let terminalOpts = input.config?.terminal
-    let legacyCompat = input.config?.legacyCompat ?? 'auto'
+    let config: SessionConfig | undefined = input.config
     let jumpChain: SshTarget[] | undefined
 
     if (input.sessionId) {
       try {
         const { record } = app.library.getSessionRecord(input.sessionId)
-        const plan = resolver.resolve(record)
-        target = plan.target
-        jumpChain = plan.jumpChain.length > 0 ? plan.jumpChain : undefined
-        legacyCompat = record.legacyCompat
-        terminalOpts = {
+        const protocol = protocolOf(record)
+        const terminal = {
           cols: input.config?.terminal.cols ?? DEFAULT_TERM_COLS,
           rows: input.config?.terminal.rows ?? DEFAULT_TERM_ROWS,
           encoding: record.encoding,
           term: record.term,
+        }
+
+        if (protocol === 'telnet') {
+          // Telnet 会话没有凭据可解、也没有跳板链可组装
+          config = {
+            protocol: 'telnet',
+            target: { host: record.host, port: record.port },
+            terminal,
+          }
+        } else {
+          const plan = resolver.resolve(record)
+          config = {
+            protocol: 'ssh',
+            target: plan.target,
+            terminal,
+            legacyCompat: record.legacyCompat ?? 'auto',
+          }
+          jumpChain = plan.jumpChain.length > 0 ? plan.jumpChain : undefined
         }
       } catch (err) {
         if (err instanceof VaultError) {
@@ -73,26 +90,20 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
-    if (!target || !terminalOpts) {
+    if (!config) {
       return sendError(reply, 400, 'INVALID_CONFIG', '缺少连接参数')
     }
 
     let session
     try {
       session = await manager.create({
-        config: {
-          target,
-          terminal: terminalOpts,
-          legacyCompat,
-        },
+        config,
         jumpChain,
-        title:
-          input.title ?? defaultTitle(target.host, target.port, target.username),
+        title: input.title ?? targetLabel(config),
       })
     } catch (err) {
-      if (err instanceof SshError) return sendSshError(reply, err)
-      app.log.error({ err }, '创建终端失败')
-      return sendError(reply, 500, 'INTERNAL', '创建终端时发生内部错误')
+      // SshError 与 TelnetError 都走同一条响应路径（结构一致）
+      return sendTerminalError(reply, err)
     }
 
     const info = session.negotiationInfo
@@ -133,9 +144,10 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
     const item: TerminalListItem = {
       terminalId: session.id,
       title: session.title,
+      protocol: protocolOf(session.config),
       host: session.config.target.host,
       port: session.config.target.port,
-      username: session.config.target.username,
+      username: targetUsername(session.config),
       attached: session.attached,
       createdAt: session.createdAt.toISOString(),
       cols: session.dimensions.cols,

@@ -23,11 +23,13 @@ import {
   BACKPRESSURE_CHECK_INTERVAL_MS,
   BACKPRESSURE_HIGH_WATER_MARK,
   BACKPRESSURE_LOW_WATER_MARK,
+  protocolOf,
   type ClientControlMessage,
   type ServerControlMessage,
   type SessionConfig,
   type SshTarget,
   type SupportedEncoding,
+  type TelnetTarget,
   type TerminalErrorCode,
   type TerminalNegotiationInfo,
 } from '@webterm/shared'
@@ -38,6 +40,8 @@ import {
 } from '../ssh/connection.js'
 import { classifySshError, SshError } from '../ssh/errors.js'
 import type { KnownHostsStore } from '../ssh/known-hosts.js'
+import { TelnetTransport } from '../telnet/transport.js'
+import { classifyTelnetError, TelnetError } from '../telnet/errors.js'
 import { createEncodingBridge, type EncodingBridge } from './encoding.js'
 
 export interface TerminalSessionOptions {
@@ -71,6 +75,14 @@ export interface TerminalSessionEvents {
 /** 单条 WS 消息的最大字节数，防止异常客户端发超大帧 */
 const MAX_INPUT_FRAME_BYTES = 1024 * 1024
 
+/** 会话保持中立：按当前协议选择对应的错误分类器 */
+interface ClassifiedError {
+  code: TerminalErrorCode
+  message: string
+  hint?: string
+  fatal: boolean
+}
+
 export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
   readonly id: string
   readonly attachToken: string
@@ -90,6 +102,8 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
   /** 跳板链上的中间连接；会话关闭时需一并释放 */
   private intermediateConns: EstablishedConnection[] = []
   private stream: ClientChannel | undefined
+  /** Telnet 传输（与 stream 互斥：同一会话只会走其中一条路径） */
+  private telnet: TelnetTransport | undefined
   private ws: WebSocket | undefined
 
   /** 已建立连接、但尚无 WS 客户端时暂存的输出 */
@@ -159,12 +173,123 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     return this.state !== 'closed'
   }
 
+  /** 当前是否已有一条可用的传输（SSH 通道或 Telnet 连接） */
+  private get hasTransport(): boolean {
+    return this.stream !== undefined || this.telnet !== undefined
+  }
+
   /**
-   * 建立 SSH 连接并打开 PTY shell。
-   * 任何失败都会抛出 SshError，由 REST 层转成 HTTP 错误。
+   * 建立连接并进入就绪态。
+   * 任何失败都会抛出 SshError / TelnetError，由 REST 层转成 HTTP 错误。
    */
   async start(): Promise<TerminalNegotiationInfo> {
-    const { target, terminal, legacyCompat } = this.config
+    return protocolOf(this.config) === 'telnet' ? this.startTelnet() : this.startSsh()
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Telnet 路径                                                         */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Telnet：一条裸 TCP 连接就是终端，没有握手、认证、通道申请这些阶段，
+   * 因此「连接成功」即「终端就绪」，中途没有可失败的分支。
+   */
+  private async startTelnet(): Promise<TerminalNegotiationInfo> {
+    const config = this.config
+    if (config.protocol !== 'telnet') {
+      throw new TelnetError('INTERNAL', '协议与调用路径不匹配')
+    }
+
+    // 跳板链依赖 SSH 的 forwardOut 通道，Telnet 这一层没有等价能力。
+    // 与其静默忽略配置（用户会以为自己在走跳板），不如明确拒绝。
+    if ((this.opts.jumpChain ?? []).length > 0) {
+      throw new TelnetError('INVALID_CONFIG', 'Telnet 不支持跳板链', {
+        hint: 'Telnet 属于明文协议且没有可承载转发通道的协议层。请先用 SSH 登录跳板机，再在终端里手动 telnet 目标设备。',
+      })
+    }
+
+    const { target, terminal } = config
+    const transport = await TelnetTransport.connect({
+      host: target.host,
+      port: target.port,
+      term: terminal.term,
+      cols: this.cols,
+      rows: this.rows,
+    })
+
+    if (this.state === 'closed') {
+      transport.close()
+      throw new TelnetError('INTERNAL', '会话在建立过程中被取消')
+    }
+
+    this.telnet = transport
+    this.serverIdent = transport.serverIdent
+
+    transport.on('data', (chunk: Buffer) => {
+      this.deliver(this.encoding.toClient(chunk))
+    })
+
+    // 协商结果会随后续往返变化（例如设备稍后才声明 WILL ECHO），
+    // 变化时刷新一次摘要，附加到 WebSocket 时下发的就是最新状态
+    transport.on('negotiation', () => {
+      if (this.telnet) this.negotiation = this.buildTelnetInfo(this.telnet)
+    })
+
+    transport.on('error', (err: TelnetError) => {
+      this.fail(err)
+    })
+
+    transport.on('close', (reason: string) => {
+      const tail = this.encoding.flush()
+      if (tail.length > 0) this.deliver(tail)
+      this.emit('exit', { code: null, signal: null, reason })
+      this.sendControl({ t: 'exit', code: null, signal: null, reason })
+      this.shutdown(reason)
+    })
+
+    const info = this.buildTelnetInfo(transport)
+    this.negotiation = info
+    this.state = 'ready'
+    return info
+  }
+
+  private buildTelnetInfo(transport: TelnetTransport): TerminalNegotiationInfo {
+    const target = this.config.target as TelnetTarget
+    return {
+      protocol: 'telnet',
+      host: target.host,
+      port: target.port,
+      // Telnet 没有登录名这一层，登录是在终端里逐行交互完成的
+      username: '',
+      serverIdent: transport.serverIdent,
+      // 明文协议：这些 SSH 专有字段在界面上会整段隐藏，填占位符即可
+      kex: '—',
+      hostKeyAlgorithm: '—',
+      cipherC2s: '—',
+      cipherS2c: '—',
+      mac: '—',
+      profile: 'telnet',
+      legacy: false,
+      encoding: this.config.terminal.encoding,
+      cols: this.cols,
+      rows: this.rows,
+      telnetOptions: transport.negotiationSummary,
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* SSH 路径                                                            */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 建立 SSH 连接并打开 PTY shell。
+   */
+  private async startSsh(): Promise<TerminalNegotiationInfo> {
+    const config = this.config
+    if (config.protocol !== 'ssh') {
+      throw new SshError('INTERNAL', '协议与调用路径不匹配')
+    }
+    const { target, terminal, legacyCompat } = config
     const jumpChain = this.opts.jumpChain ?? []
 
     // 有跳板链时逐跳 forwardOut 打通；否则直连
@@ -210,6 +335,7 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     this.stream = stream
 
     const info: TerminalNegotiationInfo = {
+      protocol: 'ssh',
       host: target.host,
       port: target.port,
       username: target.username,
@@ -313,6 +439,10 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     this.ws = ws
     this.unackedBytes = 0
 
+    // Telnet 的协商是异步完成的（设备可能在连上几百毫秒后才声明 WILL ECHO），
+    // 附加时重新取一次摘要，面板里显示的才是真实状态
+    if (this.telnet) this.negotiation = this.buildTelnetInfo(this.telnet)
+
     this.sendControl({
       t: 'ready',
       terminalId: this.id,
@@ -354,8 +484,13 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
           this.negotiation.rows = msg.rows
         }
         try {
-          // 窗口尺寸变化只需告知远端 PTY，不必重启会话
-          this.stream?.setWindow(msg.rows, msg.cols, 0, 0)
+          // 窗口尺寸变化只需告知远端，不必重启会话。
+          // SSH 走通道的 window-change，Telnet 走 NAWS 子协商。
+          if (this.telnet) {
+            this.telnet.setWindow(msg.cols, msg.rows)
+          } else {
+            this.stream?.setWindow(msg.rows, msg.cols, 0, 0)
+          }
         } catch (err) {
           this.logger.warn({ terminalId: this.id, err: String(err) }, '设置窗口尺寸失败')
         }
@@ -378,14 +513,20 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
       this.logger.warn({ terminalId: this.id, size: chunk.length }, '输入帧过大，已丢弃')
       return
     }
-    if (!this.stream || this.state !== 'ready') return
+    if (!this.hasTransport || this.state !== 'ready') return
 
     const payload = this.encoding.toRemote(chunk)
     if (payload.length === 0) return
 
+    if (this.telnet) {
+      // Telnet 运输层负责把 0xFF 转义，并在对端不回显时补一份本地回显
+      this.telnet.write(payload)
+      return
+    }
+
     // write 返回 false 表示远端窗口已满，此处无需额外处理：
     // ssh2 内部会缓冲并保证顺序，终端交互量级远小于输出量
-    this.stream.write(payload)
+    this.stream?.write(payload)
   }
 
   /* ------------------------------------------------------------------ */
@@ -426,7 +567,7 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
 
   /** 是否需要暂停远端读取 */
   private shouldPause(): boolean {
-    if (!this.stream) return false
+    if (!this.hasTransport) return false
     if (this.unackedBytes >= BACKPRESSURE_HIGH_WATER_MARK) return true
     if (this.pendingBytes >= BACKPRESSURE_HIGH_WATER_MARK) return true
     const ws = this.ws
@@ -444,15 +585,11 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
   }
 
   private recomputeBackpressure(): void {
-    if (!this.stream) return
+    if (!this.hasTransport) return
 
     if (!this.paused && this.shouldPause()) {
       this.paused = true
-      try {
-        this.stream.pause()
-      } catch {
-        /* 通道可能已关闭，忽略 */
-      }
+      this.pauseTransport()
       this.sendControl({ t: 'flow', action: 'pause' })
       this.logger.debug({ terminalId: this.id, unacked: this.unackedBytes }, '背压触发，暂停远端读取')
       this.startBackpressureTimer()
@@ -462,13 +599,28 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     if (this.paused && this.canResume()) {
       this.paused = false
       this.stopBackpressureTimer()
-      try {
-        this.stream.resume()
-      } catch {
-        /* 通道可能已关闭，忽略 */
-      }
+      this.resumeTransport()
       this.sendControl({ t: 'flow', action: 'resume' })
       this.logger.debug({ terminalId: this.id }, '背压缓解，恢复远端读取')
+    }
+  }
+
+  /** 暂停读取远端（SSH 通道或 Telnet socket 二选一） */
+  private pauseTransport(): void {
+    try {
+      if (this.telnet) this.telnet.pause()
+      else this.stream?.pause()
+    } catch {
+      /* 通道/套接字可能已关闭，忽略 */
+    }
+  }
+
+  private resumeTransport(): void {
+    try {
+      if (this.telnet) this.telnet.resume()
+      else this.stream?.resume()
+    } catch {
+      /* 通道/套接字可能已关闭，忽略 */
     }
   }
 
@@ -494,11 +646,7 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     if (!this.paused) return
     this.paused = false
     this.stopBackpressureTimer()
-    try {
-      this.stream?.resume()
-    } catch {
-      /* 忽略 */
-    }
+    this.resumeTransport()
   }
 
   /* ------------------------------------------------------------------ */
@@ -512,7 +660,7 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
       return
     }
 
-    const classified = classifySshError(err)
+    const classified = this.classifyError(err)
     this.logger.warn(
       { terminalId: this.id, code: classified.code, err: classified.message },
       '终端会话发生错误',
@@ -526,6 +674,12 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     if (classified.fatal) this.shutdown(classified.message)
   }
 
+  /** 按协议选择错误分类器：Telnet 的 errno 与 SSH 的 ssh2 错误码不是一套 */
+  private classifyError(err: unknown): ClassifiedError {
+    if (err instanceof SshError || err instanceof TelnetError) return err
+    return protocolOf(this.config) === 'telnet' ? classifyTelnetError(err) : classifySshError(err)
+  }
+
   /** 主动写入一段提示文本（如连接失败的说明），让用户在前端看到原因 */
   writeNotice(lines: string[], code: TerminalErrorCode = 'TRANSPORT'): void {
     const text = lines.map((l) => `\r\n${l}`).join('')
@@ -536,10 +690,12 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
 
   private buildFallbackInfo(): TerminalNegotiationInfo {
     const { target, terminal } = this.config
+    const isTelnet = protocolOf(this.config) === 'telnet'
     return {
+      protocol: isTelnet ? 'telnet' : 'ssh',
       host: target.host,
       port: target.port,
-      username: target.username,
+      username: isTelnet ? '' : (target as SshTarget).username,
       serverIdent: this.serverIdent,
       kex: 'unknown',
       hostKeyAlgorithm: 'unknown',
@@ -571,6 +727,12 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
     } catch {
       /* 忽略 */
     }
+    try {
+      this.telnet?.close()
+    } catch {
+      /* 忽略 */
+    }
+    this.telnet = undefined
     try {
       this.conn?.client.end()
     } catch {

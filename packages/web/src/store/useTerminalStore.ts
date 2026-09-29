@@ -7,8 +7,13 @@
  * 持久化「会话配置」（阶段 2 的会话库）才是用户真正需要的，那是另一回事。
  */
 import { create } from 'zustand'
-import type { SessionConfig, TerminalNegotiationSummary } from '@webterm/shared'
-import { DEFAULT_TERM_COLS, DEFAULT_TERM_ROWS } from '@webterm/shared'
+import type {
+  ConnectionProtocol,
+  SessionConfig,
+  TelnetNegotiationSummary,
+  TerminalNegotiationSummary,
+} from '@webterm/shared'
+import { DEFAULT_TERM_COLS, DEFAULT_TERM_ROWS, protocolOf, targetLabel } from '@webterm/shared'
 
 export type TabStatus = 'connecting' | 'ready' | 'flow-paused' | 'exited' | 'error'
 
@@ -32,6 +37,12 @@ export interface TerminalTab {
   /** 客户端侧唯一 id，与页签一一对应 */
   id: string
   title: string
+  /**
+   * 连接协议。
+   * 单独冗余一份而不总是从 config 推导：会话库引用（sessionId）的标签没有 config，
+   * 而标签栏需要它来决定「是否提供 SFTP 入口」（Telnet 没有文件传输子系统）。
+   */
+  protocol: ConnectionProtocol
   /** 快速连接时的直传配置；与会话库引用二选一 */
   config?: SessionConfig
   /** 会话库引用：连接参数由服务端解析（凭据 + 跳板链） */
@@ -42,6 +53,8 @@ export interface TerminalTab {
   attachToken?: string
   wsPath?: string
   negotiation?: TerminalNegotiationSummary
+  /** Telnet 选项协商结果，仅 telnet 标签存在（SSH 标签恒为 undefined） */
+  telnetOptions?: TelnetNegotiationSummary
   /** 结束原因 / 错误说明，用于标签提示与面板内的提示条 */
   notice?: string
   /** 服务端记录的实际 PTY 尺寸 */
@@ -68,16 +81,20 @@ export function createTabId(): string {
   return `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-/** 由会话配置推导一个默认标题，与后端的推导规则保持一致 */
+/**
+ * 由会话配置推导一个默认标题。
+ * 规则与后端共用同一份实现（shared 的 targetLabel），
+ * 避免标签上出现 `root@host` 与 `host` 两种格式。
+ */
 export function defaultTitleFor(config: SessionConfig): string {
-  const { host, port, username } = config.target
-  return `${username}@${host}${port === 22 ? '' : `:${port}`}`
+  return targetLabel(config)
 }
 
 export function newTab(config: SessionConfig, title?: string): TerminalTab {
   return {
     id: createTabId(),
     title: title?.trim() || defaultTitleFor(config),
+    protocol: protocolOf(config),
     config,
     status: 'connecting',
     dims: {
@@ -89,10 +106,15 @@ export function newTab(config: SessionConfig, title?: string): TerminalTab {
 }
 
 /** 从会话库记录创建标签：连接参数由服务端解析 */
-export function newTabFromSession(sessionId: string, title: string): TerminalTab {
+export function newTabFromSession(
+  sessionId: string,
+  title: string,
+  protocol: ConnectionProtocol = 'ssh',
+): TerminalTab {
   return {
     id: createTabId(),
     title: title.trim() || '会话',
+    protocol,
     sessionId,
     status: 'connecting',
     dims: { cols: DEFAULT_TERM_COLS, rows: DEFAULT_TERM_ROWS },

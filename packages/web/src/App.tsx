@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { LibraryNode, SessionConfig } from '@webterm/shared'
+import { protocolOf } from '@webterm/shared'
 import { closeTerminal } from './api/client'
 import { AppHeader } from './components/AppHeader'
 import { SessionSidebar, type ConnectionItem } from './components/SessionSidebar'
@@ -17,6 +18,7 @@ import { TerminalPane } from './terminal/TerminalPane'
 import { SftpWorkspace } from './sftp/SftpWorkspace'
 import { applyTheme, useThemeStore } from './theme/useTheme'
 import { createLibraryNode } from './api/client'
+import { asSshConfig } from './utils/protocol'
 
 /** 终端与 SFTP 共处一条标签栏，用前缀区分来源，避免 id 空间冲突 */
 const terminalKey = (id: string): string => `terminal:${id}`
@@ -82,6 +84,9 @@ export default function App() {
         id: terminalKey(tab.id),
         title: tab.title,
         kind: 'terminal',
+        protocol: tab.protocol,
+        // Telnet 没有 SFTP 子系统，标签上不提供「打开 SFTP」入口
+        sftpAvailable: tab.protocol === 'ssh',
         dot: tone.dot,
         label: tone.text,
         pulse: tone.pulse,
@@ -94,6 +99,7 @@ export default function App() {
         id: sftpKey(tab.id),
         title: tab.title,
         kind: 'sftp',
+        protocol: 'ssh',
         dot: tone.dot,
         label: tone.text,
         pulse: tone.pulse,
@@ -109,6 +115,7 @@ export default function App() {
         key: item.id,
         kind: item.kind,
         title: item.title,
+        protocol: item.protocol,
         dot: item.dot,
         statusText: item.notice ? `${item.label}：${item.notice}` : item.label,
       })),
@@ -121,9 +128,12 @@ export default function App() {
     (config: SessionConfig, title: string, connectMode: ConnectMode) => {
       setQuickOpen(false)
       if (connectMode === 'sftp') {
+        // SFTP 只能跑在 SSH 之上；Telnet 配置进到这里说明状态被绕过了，直接忽略
+        const ssh = asSshConfig(config)
+        if (!ssh) return
         setActiveKind('sftp')
         void openSftp(
-          { config: { target: config.target, legacyCompat: config.legacyCompat }, title },
+          { config: { target: ssh.target, legacyCompat: ssh.legacyCompat }, title },
           title,
         )
         return
@@ -138,15 +148,16 @@ export default function App() {
     (node: LibraryNode) => {
       if (!node.session) return
       setActiveKind('terminal')
-      addTab(newTabFromSession(node.id, node.name))
+      addTab(newTabFromSession(node.id, node.name, protocolOf(node.session)))
     },
     [addTab],
   )
 
-  /** 从会话库直接打开 SFTP（连接参数与凭据由服务端解析） */
+  /** 从会话库直接打开 SFTP（连接参数与凭据由服务端解析）；Telnet 会话没有 SFTP */
   const handleOpenSftpSession = useCallback(
     (node: LibraryNode) => {
       if (!node.session) return
+      if (protocolOf(node.session) === 'telnet') return
       setActiveKind('sftp')
       void openSftp({ sessionId: node.id, title: `${node.name} · SFTP` }, '')
     },
@@ -158,22 +169,24 @@ export default function App() {
    *
    * 优先把 terminalId 交给服务端复用同一条 SSH 连接 ——
    * 老设备（交换机/路由器）的 VTY 线路常常只有几条，重复登录会直接把人挡在门外。
+   * Telnet 会话没有 SFTP 子系统，直接返回。
    */
   const handleOpenSftpForTerminal = useCallback(
     (unifiedId: string) => {
       const terminalTabId = unifiedId.slice('terminal:'.length)
       const tab = tabs.find((t) => t.id === terminalTabId)
-      if (!tab) return
+      if (!tab || tab.protocol !== 'ssh') return
       setActiveKind('sftp')
 
       if (tab.terminalId) {
         void openSftp({ terminalId: tab.terminalId, title: `${tab.title} · SFTP` }, '')
         return
       }
-      if (tab.config) {
+      const ssh = asSshConfig(tab.config)
+      if (ssh) {
         void openSftp(
           {
-            config: { target: tab.config.target, legacyCompat: tab.config.legacyCompat },
+            config: { target: ssh.target, legacyCompat: ssh.legacyCompat },
             title: `${tab.title} · SFTP`,
           },
           '',

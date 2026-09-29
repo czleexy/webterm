@@ -7,6 +7,8 @@
 import { z } from 'zod'
 import {
   AUTH_METHODS,
+  CONNECTION_PROTOCOLS,
+  DEFAULT_PORTS,
   DEFAULT_TERM,
   DEFAULT_TERM_COLS,
   DEFAULT_TERM_ROWS,
@@ -22,7 +24,8 @@ const HostSchema = z
   .refine((v) => !/\s/.test(v), '主机地址不能包含空白字符')
   .refine((v) => !v.includes('://'), '主机地址不应包含协议前缀（如 ssh://）')
 
-const PortSchema = z.coerce.number().int().min(1).max(65535).default(22)
+/** 端口：缺省按协议取（SSH 22 / Telnet 23），由各自的 target 模式负责填默认值 */
+const PortSchema = z.coerce.number().int().min(1).max(65535)
 
 const UsernameSchema = z.string().trim().min(1, '用户名不能为空').max(128, '用户名过长')
 
@@ -32,7 +35,7 @@ const MAX_PRIVATE_KEY_BYTES = 64 * 1024
 export const SshTargetSchema = z
   .object({
     host: HostSchema,
-    port: PortSchema,
+    port: PortSchema.default(DEFAULT_PORTS.ssh),
     username: UsernameSchema,
     authMethod: z.enum(AUTH_METHODS).default('password'),
     password: z.string().max(1024, '口令过长').optional(),
@@ -56,6 +59,16 @@ export const SshTargetSchema = z
     }
   })
 
+/**
+ * Telnet 目标：只有主机与端口。
+ * 刻意不提供用户名/口令字段 —— 让用户把口令交给明文协议已经是权衡后的选择，
+ * 更不该让它进入配置文件或被持久化。登录完全在终端里交互完成。
+ */
+export const TelnetTargetSchema = z.object({
+  host: HostSchema,
+  port: PortSchema.default(DEFAULT_PORTS.telnet),
+})
+
 export const TerminalOptionsSchema = z.object({
   cols: z.coerce.number().int().min(1).max(1000).default(DEFAULT_TERM_COLS),
   rows: z.coerce.number().int().min(1).max(1000).default(DEFAULT_TERM_ROWS),
@@ -65,22 +78,39 @@ export const TerminalOptionsSchema = z.object({
 
 export const LegacyCompatSchema = z.enum(['auto', 'always', 'never']).default('auto')
 
-export const SessionConfigSchema = z.object({
-  target: SshTargetSchema,
-  terminal: TerminalOptionsSchema.default({
-    cols: DEFAULT_TERM_COLS,
-    rows: DEFAULT_TERM_ROWS,
-    encoding: 'utf8',
-    term: DEFAULT_TERM,
+const DefaultTerminalOptions = {
+  cols: DEFAULT_TERM_COLS,
+  rows: DEFAULT_TERM_ROWS,
+  encoding: 'utf8' as const,
+  term: DEFAULT_TERM,
+}
+
+/**
+ * 会话配置按协议判别。
+ * protocol 给了默认值 'ssh'，因此老的客户端脚本（不带 protocol）仍然可用；
+ * 一旦显式写了 'telnet'，就必须走 Telnet 那一支的校验，不会出现
+ * 「声明 telnet 却带着 SSH 私钥」这种半截配置。
+ */
+export const SessionConfigSchema = z.union([
+  z.object({
+    protocol: z.literal('ssh').default('ssh'),
+    target: SshTargetSchema,
+    terminal: TerminalOptionsSchema.default(DefaultTerminalOptions),
+    legacyCompat: LegacyCompatSchema.optional(),
   }),
-  legacyCompat: LegacyCompatSchema.optional(),
-})
+  z.object({
+    protocol: z.literal('telnet'),
+    target: TelnetTargetSchema,
+    terminal: TerminalOptionsSchema.default(DefaultTerminalOptions),
+  }),
+])
 
 export const ProbeSessionRequestSchema = z
   .object({
-    target: SshTargetSchema.optional(),
+    target: z.union([SshTargetSchema, TelnetTargetSchema]).optional(),
     sessionId: z.string().trim().min(1).optional(),
     legacyCompat: LegacyCompatSchema.optional(),
+    protocol: z.enum(CONNECTION_PROTOCOLS).default('ssh'),
   })
   .refine((v) => Boolean(v.target || v.sessionId), {
     message: 'target 与 sessionId 必须提供一个',
@@ -151,16 +181,51 @@ const JumpHopSchema = z.object({
   legacyCompat: LegacyCompatSchema.optional(),
 })
 
-export const SessionRecordSchema = z.object({
-  host: HostSchema,
-  port: PortSchema,
-  username: UsernameSchema,
-  credentialId: z.string().trim().min(1, '必须选择登录凭据'),
-  encoding: z.enum(SUPPORTED_ENCODINGS).default('utf8'),
-  term: z.string().trim().min(1).max(64).default(DEFAULT_TERM),
-  legacyCompat: LegacyCompatSchema.default('auto'),
-  jumpChain: z.array(JumpHopSchema).max(5, '跳板链最深 5 级').default([]),
-})
+/**
+ * 会话库记录。
+ *
+ * 结构与 shared 的 SessionRecord 一致：扁平字段 + protocol 判别，
+ * 但这里要按协议把「必填项」补齐 —— Telnet 不需要用户名与凭据，
+ * SSH 则两者都必须有。
+ */
+export const SessionRecordSchema = z
+  .object({
+    protocol: z.enum(CONNECTION_PROTOCOLS).default('ssh'),
+    host: HostSchema,
+    port: PortSchema,
+    username: UsernameSchema.optional(),
+    credentialId: z.string().trim().min(1, '必须选择登录凭据').optional(),
+    encoding: z.enum(SUPPORTED_ENCODINGS).default('utf8'),
+    term: z.string().trim().min(1).max(64).default(DEFAULT_TERM),
+    legacyCompat: LegacyCompatSchema.optional(),
+    jumpChain: z.array(JumpHopSchema).max(5, '跳板链最深 5 级').default([]),
+  })
+  .superRefine((value, ctx) => {
+    if (value.protocol === 'ssh') {
+      if (!value.username) {
+        ctx.addIssue({ code: 'custom', path: ['username'], message: 'SSH 会话必须填写用户名' })
+      }
+      if (!value.credentialId) {
+        ctx.addIssue({ code: 'custom', path: ['credentialId'], message: 'SSH 会话必须选择登录凭据' })
+      }
+      return
+    }
+    // Telnet：明令禁止携带凭据与跳板链，避免出现「看着像配了、实际不生效」的配置
+    if (value.credentialId) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['credentialId'],
+        message: 'Telnet 会话不需要登录凭据（口令在终端里交互输入）',
+      })
+    }
+    if (value.jumpChain.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['jumpChain'],
+        message: 'Telnet 不支持跳板链',
+      })
+    }
+  })
 
 export const CreateLibraryNodeRequestSchema = z
   .object({

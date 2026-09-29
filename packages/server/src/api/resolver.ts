@@ -7,6 +7,7 @@
  */
 import type { SshTarget, SessionRecord } from '@webterm/shared'
 import { VaultError } from '../security/vault.js'
+import { LibraryError } from '../db/library.js'
 import type { CredentialStore } from '../security/credential-store.js'
 
 export interface ResolvedConnectPlan {
@@ -19,6 +20,11 @@ export class SessionResolver {
   constructor(private readonly credentials: CredentialStore) {}
 
   resolve(record: SessionRecord): ResolvedConnectPlan {
+    // Telnet 会话没有凭据这一层，走到这里说明调用方判断错了协议
+    if ((record.protocol ?? 'ssh') === 'telnet') {
+      throw new LibraryError('NOT_A_SESSION', 'Telnet 会话没有 SSH 凭据可解析')
+    }
+
     const target = this.buildTarget(record)
     const jumpChain = (record.jumpChain ?? []).map((hop, i) =>
       this.buildTarget(
@@ -38,6 +44,14 @@ export class SessionResolver {
     ref: Pick<SessionRecord, 'host' | 'port' | 'username' | 'credentialId'>,
     label = '登录',
   ): SshTarget {
+    // username / credentialId 在类型上是可选的（Telnet 记录没有它们），
+    // 因此在这里补齐「SSH 场景必填」这一约束，而不是把可选性一路带到 SSH 层
+    if (!ref.credentialId) {
+      throw new LibraryError('CREDENTIAL_MISSING', `${label}：该会话没有配置凭据`)
+    }
+    if (!ref.username) {
+      throw new LibraryError('CREDENTIAL_MISSING', `${label}：该会话没有配置用户名`)
+    }
     const secret = this.requireSecret(ref.credentialId, label)
     return {
       host: ref.host,

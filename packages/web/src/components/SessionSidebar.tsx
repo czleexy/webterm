@@ -7,14 +7,18 @@
  * 这样终端与 SFTP 两种会话能在同一个列表里共存，而不用在这里做类型分支。
  */
 import { useState } from 'react'
-import type { LibraryNode } from '@webterm/shared'
+import type { ConnectionProtocol, LibraryNode } from '@webterm/shared'
+import { protocolOf } from '@webterm/shared'
 import { cn } from '../utils/cn'
+import { PROTOCOL_CHIP_CLASS, protocolLabel } from '../utils/protocol'
 
 export interface ConnectionItem {
   /** 全局唯一 key（'terminal:<id>' / 'sftp:<id>'） */
   key: string
   kind: 'terminal' | 'sftp'
   title: string
+  /** 连接协议，用于列表上的协议小标 */
+  protocol?: ConnectionProtocol
   dot: string
   statusText: string
 }
@@ -71,10 +75,18 @@ export function SessionSidebar({
   const renderNode = (node: LibraryNode, depth: number) => {
     const isFolder = node.kind === 'folder'
     const isCollapsed = collapsed.has(node.id)
+    // 会话库节点的协议；旧记录没有 protocol 字段，按 ssh 处理
+    const sessionProtocol = isFolder ? undefined : protocolOf(node.session ?? {})
+    const sftpAllowed = sessionProtocol !== 'telnet'
 
     return (
       <li key={node.id}>
         <div
+          // 测试钩子：节点的协议与类型是界面上最难用文本断言的部分
+          data-testid="library-node"
+          data-kind={node.kind}
+          data-name={node.name}
+          data-protocol={sessionProtocol ?? ''}
           className={cn(
             'group flex items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors hover:bg-neutral-100 dark:hover:bg-neutral-800/60',
           )}
@@ -102,6 +114,17 @@ export function SessionSidebar({
             </svg>
           )}
 
+          {sessionProtocol ? (
+            <span
+              className={cn(
+                'shrink-0 rounded border px-1 py-px text-[9px] leading-none',
+                PROTOCOL_CHIP_CLASS[sessionProtocol],
+              )}
+            >
+              {protocolLabel(sessionProtocol)}
+            </span>
+          ) : null}
+
           <span
             role="button"
             tabIndex={0}
@@ -114,7 +137,13 @@ export function SessionSidebar({
               }
             }}
             className="min-w-0 flex-1 cursor-pointer truncate text-xs text-neutral-700 dark:text-neutral-300"
-            title={isFolder ? node.name : `${node.name}（双击之外的单击即连接）`}
+            title={
+              isFolder
+                ? node.name
+                : sftpAllowed
+                  ? `${node.name}（单击即连接）`
+                  : `${node.name}（Telnet 明文连接，单击即连接）`
+            }
           >
             {node.name}
           </span>
@@ -142,14 +171,16 @@ export function SessionSidebar({
               </>
             ) : (
               <>
-                <button
-                  type="button"
-                  title="打开 SFTP 文件传输"
-                  onClick={() => onOpenSftp(node)}
-                  className="text-[10px] text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-                >
-                  SFTP
-                </button>
+                {sftpAllowed ? (
+                  <button
+                    type="button"
+                    title="打开 SFTP 文件传输"
+                    onClick={() => onOpenSftp(node)}
+                    className="text-[10px] text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                  >
+                    SFTP
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   title="编辑会话"
@@ -230,7 +261,16 @@ export function SessionSidebar({
                         fill="currentColor"
                       />
                     </svg>
-                  ) : null}
+                  ) : (
+                    <span
+                      className={cn(
+                        'shrink-0 rounded border px-1 py-px text-[9px] leading-none',
+                        PROTOCOL_CHIP_CLASS[item.protocol ?? 'ssh'],
+                      )}
+                    >
+                      {protocolLabel(item.protocol)}
+                    </span>
+                  )}
                   <span className="min-w-0 flex-1 truncate text-xs text-neutral-700 dark:text-neutral-300">
                     {item.title}
                   </span>

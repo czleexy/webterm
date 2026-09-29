@@ -6,13 +6,22 @@
  * 组件本身不认识任何 store —— 上层把标签压成 WorkspaceTabItem 数组传进来，
  * 这样新增会话类型（比如后续的端口转发）不需要改这里。
  */
+import type { ConnectionProtocol } from '@webterm/shared'
 import { cn } from '../utils/cn'
+import { PROTOCOL_CHIP_CLASS, protocolLabel } from '../utils/protocol'
 
 export interface WorkspaceTabItem {
   /** 全局唯一（终端与 SFTP 的 id 前缀不同，天然不冲突） */
   id: string
   title: string
   kind: 'terminal' | 'sftp'
+  /** 连接协议，用于标签上的协议小标 */
+  protocol?: ConnectionProtocol
+  /**
+   * 是否允许在该标签上打开 SFTP。
+   * 缺省视为允许；Telnet 标签显式传 false（协议没有 SFTP 子系统）。
+   */
+  sftpAvailable?: boolean
   /** 状态点颜色类，由各 store 的 tone 表提供 */
   dot: string
   /** 状态文案，用于 title 提示 */
@@ -82,10 +91,19 @@ export function WorkspaceTabs({
                     fill="currentColor"
                   />
                 </svg>
-              ) : null}
+              ) : (
+                <span
+                  className={cn(
+                    'shrink-0 rounded border px-1 py-px text-[9px] leading-none',
+                    PROTOCOL_CHIP_CLASS[item.protocol ?? 'ssh'],
+                  )}
+                >
+                  {protocolLabel(item.protocol)}
+                </span>
+              )}
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
 
-              {item.kind === 'terminal' && onOpenSftpFor ? (
+              {item.kind === 'terminal' && onOpenSftpFor && item.sftpAvailable !== false ? (
                 <button
                   type="button"
                   aria-label={`在 ${item.title} 上打开 SFTP 文件传输`}

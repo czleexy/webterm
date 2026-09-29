@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { API_PREFIX, WS_PATH } from '@webterm/shared'
+import { API_PREFIX, PROTOCOL_LABEL, WS_PATH } from '@webterm/shared'
 import type { CapabilitiesResponse } from '@webterm/shared'
 import { fetchCapabilities } from '../api/client'
 import type { UseHealthResult } from '../hooks/useHealth'
@@ -19,11 +19,12 @@ const PHASES: PhaseItem[] = [
   { id: 1, name: '终端主干打通', scope: 'ssh2 + WebSocket + xterm.js + 背压', status: 'done' },
   { id: 2, name: '会话管理与持久化', scope: 'SQLite / 主密码 / 密钥认证 / 跳板机', status: 'done' },
   { id: 3, name: 'SFTP 文件传输', scope: '双栏浏览 / 队列 / 断点续传 / 远程编辑', status: 'done' },
-  { id: 4, name: '端口转发与隧道', scope: '-L / -R / -D SOCKS5', status: 'planned' },
-  { id: 5, name: '自动化与批量运维', scope: '触发器 / 脚本沙箱 / 批量执行', status: 'planned' },
-  { id: 6, name: '日志与审计', scope: '会话日志 / 归档 / 审计表', status: 'planned' },
-  { id: 7, name: '体验打磨', scope: '主题 / 快捷键 / 搜索 / 分屏', status: 'planned' },
-  { id: 8, name: '插件与打包', scope: '插件宿主 / 生产构建', status: 'planned' },
+  { id: 4, name: 'Telnet 明文终端', scope: '选项协商 / NAWS / 本地回显 / 端口 23', status: 'done' },
+  { id: 5, name: '端口转发与隧道', scope: '-L / -R / -D SOCKS5', status: 'planned' },
+  { id: 6, name: '自动化与批量运维', scope: '触发器 / 脚本沙箱 / 批量执行', status: 'planned' },
+  { id: 7, name: '日志与审计', scope: '会话日志 / 归档 / 审计表', status: 'planned' },
+  { id: 8, name: '体验打磨', scope: '主题 / 快捷键 / 搜索 / 分屏', status: 'planned' },
+  { id: 9, name: '插件与打包', scope: '插件宿主 / 生产构建', status: 'planned' },
 ]
 
 const STATUS_BADGE: Record<PhaseStatus, { text: string; className: string }> = {
@@ -91,12 +92,13 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="text-base font-medium text-neutral-900 dark:text-neutral-100">
-        浏览器里的 SSH 工作台
+        浏览器里的 SSH / Telnet 工作台
       </h1>
       <p className="mt-1.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
-        后端跑在本机，负责建立 SSH 连接与协议处理；浏览器只做渲染与交互。
-        <b className="font-medium text-neutral-700 dark:text-neutral-300">已完成阶段 0 ~ 3</b>
-        ：多标签终端、会话库与主密码保险库、SFTP 双栏文件传输均已可用，下一站是端口转发与隧道。
+        后端跑在本机，负责建立连接与协议处理；浏览器只做渲染与交互。
+        <b className="font-medium text-neutral-700 dark:text-neutral-300">已完成阶段 0 ~ 4</b>
+        ：多标签终端、会话库与主密码保险库、SFTP 双栏文件传输，以及 SSH / Telnet 双协议支持均已可用，
+        下一站是端口转发与隧道。
       </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -106,10 +108,10 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
           onClick={onNew}
           className="rounded-md bg-neutral-900 px-3.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white"
         >
-          新建 SSH 连接
+          新建连接
         </button>
         <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
-          快捷键：Alt+T 新建 · Alt+W 关闭 · Alt+↑/↓ 切换标签
+          支持 SSH 与 Telnet（端口 23）· 快捷键：Alt+T 新建 · Alt+W 关闭 · Alt+↑/↓ 切换标签
         </span>
       </div>
 
@@ -130,10 +132,16 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
         <InfoCell label="活跃终端" value={data ? String(data.activeTabs) : '—'} />
       </div>
 
-      <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+      <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-4">
         <InfoCell label="REST 前缀" value={API_PREFIX} />
         <InfoCell label="终端端点" value={`${WS_PATH}/terminal/:id`} />
         <InfoCell label="ssh2" value={caps ? `v${caps.ssh2Version}` : '—'} />
+        <InfoCell
+          label="支持协议"
+          value={
+            caps ? caps.supportedProtocols.map((p) => PROTOCOL_LABEL[p]).join(' / ') : '—'
+          }
+        />
       </div>
 
       {/* 算法档案：老设备排障时最常需要确认的信息 */}

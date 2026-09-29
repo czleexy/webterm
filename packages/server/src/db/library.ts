@@ -32,7 +32,10 @@ export class LibraryStore {
       updatedAt: row.updated_at,
     }
     if (row.kind === 'session' && row.session_json) {
-      node.session = JSON.parse(row.session_json) as SessionRecord
+      const parsed = JSON.parse(row.session_json) as SessionRecord
+      // 阶段 2 写入的记录没有 protocol 字段；统一归一成 ssh，
+      // 免得协议判定散落到每个调用点各写一遍 `?? 'ssh'`
+      node.session = { ...parsed, protocol: parsed.protocol ?? 'ssh' }
     }
     return node
   }
@@ -190,7 +193,8 @@ export class LibraryStore {
   }
 
   /**
-   * 校验会话配置：凭据必须真实存在。
+   * 校验会话配置：SSH 的凭据必须真实存在；Telnet 无需凭据，但要挡住
+   * 「配了凭据/跳板链」这种看起来生效、实际上根本不会被用到的组合。
    * 注意这里不要求保险库已解锁 —— 保存时只需 id 存在，
    * 连接时才需要解密（那时才要求解锁）。
    */
@@ -202,6 +206,24 @@ export class LibraryStore {
     if (!session) {
       throw new LibraryError('MISSING_SESSION', '会话节点必须携带 session 配置')
     }
+
+    if ((session.protocol ?? 'ssh') === 'telnet') {
+      if (session.credentialId) {
+        throw new LibraryError(
+          'CREDENTIAL_NOT_APPLICABLE',
+          'Telnet 会话不需要登录凭据：口令在终端里交互输入，不会被保存',
+        )
+      }
+      if ((session.jumpChain ?? []).length > 0) {
+        throw new LibraryError('CREDENTIAL_NOT_APPLICABLE', 'Telnet 不支持跳板链')
+      }
+      return
+    }
+
+    if (!session.credentialId) {
+      throw new LibraryError('CREDENTIAL_MISSING', 'SSH 会话必须选择登录凭据')
+    }
+
     const checks: Array<{ id: string | undefined; label: string }> = [
       { id: session.credentialId, label: '登录凭据' },
       ...(session.jumpChain ?? []).map((h, i) => ({
@@ -225,7 +247,8 @@ export class LibraryError extends Error {
       | 'INVALID_PARENT'
       | 'CYCLE'
       | 'MISSING_SESSION'
-      | 'CREDENTIAL_MISSING',
+      | 'CREDENTIAL_MISSING'
+      | 'CREDENTIAL_NOT_APPLICABLE',
     message: string,
   ) {
     super(message)

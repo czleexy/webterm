@@ -69,6 +69,35 @@ export const SUPPORTED_ENCODINGS = [
 
 export type SupportedEncoding = (typeof SUPPORTED_ENCODINGS)[number]
 
+/* ------------------------------------------------------------------ */
+/* 阶段 4：Telnet（明文终端协议）                                       */
+/* ------------------------------------------------------------------ */
+
+/** 支持的连接协议 */
+export const CONNECTION_PROTOCOLS = ['ssh', 'telnet'] as const
+
+export type ConnectionProtocol = (typeof CONNECTION_PROTOCOLS)[number]
+
+/** 各协议的默认端口：SSH 22 / Telnet 23 */
+export const DEFAULT_PORTS: Record<ConnectionProtocol, number> = {
+  ssh: 22,
+  telnet: 23,
+}
+
+export const PROTOCOL_LABEL: Record<ConnectionProtocol, string> = {
+  ssh: 'SSH',
+  telnet: 'Telnet',
+}
+
+/** Telnet 建连超时（毫秒）。Telnet 没有握手往返，超时给短一些 */
+export const TELNET_CONNECT_TIMEOUT_MS = 12_000
+
+/** Telnet 探测时读取欢迎语（banner）的最长等待（毫秒） */
+export const TELNET_BANNER_WAIT_MS = 800
+
+/** Telnet 探测时 banner 的截断长度，避免把设备的大量输出灌进响应 */
+export const TELNET_BANNER_MAX_CHARS = 512
+
 /** 认证方式白名单 */
 export const AUTH_METHODS = ['password', 'privateKey'] as const
 

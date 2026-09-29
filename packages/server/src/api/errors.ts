@@ -9,6 +9,7 @@ import type { FastifyReply } from 'fastify'
 import type { ApiError, TerminalErrorCode } from '@webterm/shared'
 import type { ZodError } from 'zod'
 import { ERROR_CODE_DESCRIPTION, SshError } from '../ssh/errors.js'
+import { TelnetError } from '../telnet/errors.js'
 
 export function sendValidationError(reply: FastifyReply, error: ZodError): FastifyReply {
   const body: ApiError = {
@@ -22,7 +23,7 @@ export function sendValidationError(reply: FastifyReply, error: ZodError): Fasti
   return reply.code(400).send(body)
 }
 
-/** SSH 错误码 → HTTP 状态码 */
+/** 错误码 → HTTP 状态码（两种协议共用一套映射） */
 const STATUS_BY_CODE: Record<TerminalErrorCode, number> = {
   // 参数/环境问题
   UNREACHABLE: 502,
@@ -40,21 +41,36 @@ const STATUS_BY_CODE: Record<TerminalErrorCode, number> = {
   INTERNAL: 500,
 }
 
-export function sendSshError(reply: FastifyReply, err: unknown): FastifyReply {
-  const sshErr =
-    err instanceof SshError
+/** 带上 code 与中文说明的终端错误 */
+interface TerminalErrorLike {
+  code: TerminalErrorCode
+  message: string
+  hint?: string
+}
+
+/**
+ * 终端类错误的统一出口。
+ * SSH 与 Telnet 的 error 对象形状一致（code / message / hint），
+ * 因此这里做一次结构判别就够，不必让每个调用方分别处理两种类型。
+ */
+export function sendTerminalError(reply: FastifyReply, err: unknown): FastifyReply {
+  const normalized: TerminalErrorLike =
+    err instanceof SshError || err instanceof TelnetError
       ? err
-      : new SshError('INTERNAL', err instanceof Error ? err.message : String(err))
+      : {
+          code: 'INTERNAL',
+          message: err instanceof Error ? err.message : String(err),
+        }
 
   const body: ApiError = {
-    error: sshErr.code,
+    error: normalized.code,
     // 把错误码的中文含义与原始消息都带上，前端提示与排障都够用
-    message: sshErr.hint
-      ? `${ERROR_CODE_DESCRIPTION[sshErr.code]}：${sshErr.message}\n\n${sshErr.hint}`
-      : `${ERROR_CODE_DESCRIPTION[sshErr.code]}：${sshErr.message}`,
+    message: normalized.hint
+      ? `${ERROR_CODE_DESCRIPTION[normalized.code]}：${normalized.message}\n\n${normalized.hint}`
+      : `${ERROR_CODE_DESCRIPTION[normalized.code]}：${normalized.message}`,
   }
 
-  return reply.code(STATUS_BY_CODE[sshErr.code] ?? 500).send(body)
+  return reply.code(STATUS_BY_CODE[normalized.code] ?? 500).send(body)
 }
 
 export function sendError(

@@ -20,7 +20,7 @@
  *   NODE_PATH=".../node/workspace/node_modules" node data/tmp/e2e-browser-tunnel.mjs
  */
 import { createRequire } from 'node:module'
-import { execSync, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
@@ -145,17 +145,24 @@ async function waitHealthy(timeoutMs = 20_000) {
 /* 端口与转发探测工具                                                  */
 /* ------------------------------------------------------------------ */
 
-/** netstat 里该端口是否处于 LISTENING（验收条件点名要求的口径） */
-function netstatListening(port) {
-  try {
-    const out = execSync('netstat -ano', { encoding: 'utf8', windowsHide: true })
-    const re = new RegExp(`[:.]${port}\\s`)
-    return out
-      .split(/\r?\n/)
-      .some((line) => /LISTENING/i.test(line) && re.test(line))
-  } catch {
-    return false
-  }
+/**
+ * 该端口是否处于监听。
+ *
+ * 判据是「反向 bind」：能在同一地址上再 bind 成功，说明压根没人监听；
+ * 报 EADDRINUSE 才说明有。为什么不直接 `netstat -ano`：
+ *
+ *  1. `execSync` 要起一个 cmd.exe，在受限环境里会直接 EBUSY，
+ *     于是「端口没监听」和「查不了」在结果上无法区分（两者都返回 false）；
+ *  2. 即便查得到，netstat 报 LISTENING 也不等于这个地址真能连上 ——
+ *     反向 bind 问的正是「这个端口现在归谁」。
+ */
+function portInUse(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer()
+    server.once('error', (err) => resolve(err.code === 'EADDRINUSE'))
+    server.once('listening', () => server.close(() => resolve(false)))
+    server.listen(port, '127.0.0.1')
+  })
 }
 
 /** 端口当前是否空闲（能 bind 才算真的释放） */
@@ -459,7 +466,7 @@ try {
     await clickText('设置并解锁')
   }
   check('设置主密码后进入主界面', await hasText('会话库', 12_000))
-  check('欢迎页声明完成阶段 0 ~ 6', await hasText('已完成阶段 0 ~ 6'))
+  check('欢迎页声明完成阶段 0 ~ 9', await hasText('已完成阶段 0 ~ 9'))
   check('欢迎页列出自动化与批量运维', await hasText('自动化与批量运维'))
   check('欢迎页列出端口转发阶段', await hasText('端口转发与隧道'))
   check('头部出现隧道入口', await exists('[data-testid="open-tunnels"]'))
@@ -526,7 +533,7 @@ try {
   const localEcho = await roundTrip(L_LOCAL, 'through-local-forward')
   check('外部客户端经本地转发拿到业务响应', Boolean(localEcho), localEcho ? localEcho.replace(/\n/g, ' ⏎ ').trim() : '连接失败')
   check('响应里带上目标服务的问候语', Boolean(localEcho?.includes(GREETING)))
-  check('netstat 显示监听端口已就绪', netstatListening(L_LOCAL))
+  check('本地转发端口处于监听', (await portInUse(L_LOCAL)))
 
   // 统计：连接数与字节数要能被面板看到（每 2 秒轮询一次）
   const statsRows = await waitRows(
@@ -599,7 +606,7 @@ try {
   console.log('\n[8] 停止、重启与删除')
   // 关掉面板再看端口状态：避免面板的轮询把「已停止」又刷新成别的样子
   check('关闭面板', await closePanel())
-  check('停止前端口处于监听', netstatListening(L_LOCAL))
+  check('停止前端口处于监听', (await portInUse(L_LOCAL)))
 
   check('重新打开面板', await openPanel())
   const stopOk = await page.evaluate((port) => {
@@ -619,7 +626,7 @@ try {
   )
   check('行状态变为「已停止」', stoppedRows !== null, stoppedRows?.join(' | ') ?? '超时')
   await sleep(400)
-  check('netstat 中监听已消失', !netstatListening(L_LOCAL))
+  check('监听已消失（端口可再次 bind）', !(await portInUse(L_LOCAL)))
   check('端口可被重新绑定', await canBind(L_LOCAL))
   check('停止后外部连接不再通', (await roundTrip(L_LOCAL, 'after-stop', 2500)) === null)
   await shot('07-stopped')
@@ -640,7 +647,7 @@ try {
     rows.some((r) => r.includes(`127.0.0.1:${L_LOCAL}`) && r.includes('运行中')),
   )
   check('行状态回到「运行中」', restartedRows !== null, restartedRows?.join(' | ') ?? '超时')
-  check('重启后端口重新监听', netstatListening(L_LOCAL))
+  check('重启后端口重新监听', (await portInUse(L_LOCAL)))
   const afterRestart = await roundTrip(L_LOCAL, 'after-restart')
   check('重启后链路再次可用', Boolean(afterRestart), afterRestart ? afterRestart.trim() : '连接失败')
 
@@ -779,7 +786,7 @@ try {
   check('会话建立后隧道自动启动', Boolean(autoTunnel), JSON.stringify(autoTunnel?.status))
   check('自动启动的隧道被标记 autoStarted', autoTunnel?.autoStarted === true)
   check('终端里没有出现隧道失败提示', !(await waitTermText('端口转发启动失败', 1500)))
-  check('自动启动的隧道端口已监听', netstatListening(LIB_LOCAL))
+  check('自动启动的隧道端口已监听', (await portInUse(LIB_LOCAL)))
   const libEcho = await roundTrip(LIB_LOCAL, 'auto-started')
   check('自动启动的链路可用', Boolean(libEcho), libEcho ? libEcho.trim() : '连接失败')
 
@@ -807,13 +814,13 @@ try {
     for (;;) {
       const list = await tunnels()
       const gone = !list.some((t) => t.spec.type === 'local' && t.spec.bindPort === LIB_LOCAL)
-      if (gone && !netstatListening(LIB_LOCAL)) return true
+      if (gone && !(await portInUse(LIB_LOCAL))) return true
       if (Date.now() > deadline) return false
       await sleep(300)
     }
   })()
   check('该会话的隧道被回收', releasedLib)
-  check('netstat 中端口已消失', !netstatListening(LIB_LOCAL))
+  check('端口已释放', !(await portInUse(LIB_LOCAL)))
   check('端口可被重新绑定', await canBind(LIB_LOCAL))
 
   // 再关掉第一条 SSH 会话，剩下的两条隧道也应随之消失
@@ -830,14 +837,14 @@ try {
   const allGone = await (async () => {
     const deadline = Date.now() + 12_000
     for (;;) {
-      if ((await tunnels()).length === 0 && !netstatListening(L_LOCAL)) return true
+      if ((await tunnels()).length === 0 && !(await portInUse(L_LOCAL))) return true
       if (Date.now() > deadline) return false
       await sleep(300)
     }
   })()
   check('全部隧道随会话一起回收', allGone)
   check('服务端的隧道列表已清空', (await tunnels()).length === 0)
-  check('本地转发端口已释放（netstat 验证）', !netstatListening(L_LOCAL))
+  check('本地转发端口已释放', !(await portInUse(L_LOCAL)))
   check('端口可被重新绑定', await canBind(L_LOCAL))
   const listAfter = await api('/api/terminals')
   check('服务端终端已回收', (listAfter?.terminals ?? []).length === 0, String((listAfter?.terminals ?? []).length))

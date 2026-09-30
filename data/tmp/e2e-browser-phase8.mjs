@@ -366,7 +366,7 @@ try {
     })
   }
   check('设置主密码后进入主界面', await hasText('会话库', 15_000))
-  check('首页声明已完成阶段 0 ~ 8', await hasText('已完成阶段 0 ~ 8', 8000))
+  check('首页声明已完成阶段 0 ~ 9', await hasText('已完成阶段 0 ~ 9', 8000))
   check('首页阶段列表把「体验打磨」标为已完成', await page.evaluate(() => {
     const row = [...document.querySelectorAll('[data-testid^="welcome-phase-"]')].find((el) =>
       (el.textContent || '').includes('体验打磨'),

@@ -275,9 +275,12 @@ try {
   }
   check('设置主密码后进入主界面', await hasText('会话库', 12_000))
   check('顶部有「日志」入口', await exists('[data-testid="open-logs"]'))
-  // 首页实施进度要与真实交付状态一致（阶段 8 完成、下一步是阶段 9）
-  check('首页进度标注「已完成阶段 0 ~ 8」', await hasText('已完成阶段 0 ~ 8', 6000))
-  check('首页说明下一步是阶段 9', await hasText('下一步是阶段 9', 4000))
+  // 首页实施进度要与真实交付状态一致（阶段 9 完成，全部阶段收口）
+  check('首页进度标注「已完成阶段 0 ~ 9」', await hasText('已完成阶段 0 ~ 9', 6000))
+  check(
+    '首页收口说明发布形态已就绪',
+    (await hasText('发布形态已就绪', 4000)) || (await hasText('npm 全局包', 2000)),
+  )
   check('首页阶段列表把「日志与审计」标为已完成', await page.evaluate(() => {
     const rows = [...document.querySelectorAll('[data-testid^="welcome-phase-"]')]
     const row = rows.find((el) => (el.textContent || '').includes('日志与审计'))

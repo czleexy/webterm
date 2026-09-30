@@ -370,7 +370,7 @@ try {
     await clickTextIn('body', '设置并解锁')
   }
   check('设置主密码后进入主界面', await hasText('会话库', 15_000))
-  check('欢迎页声明完成阶段 0 ~ 6', await hasText('已完成阶段 0 ~ 6'))
+  check('欢迎页声明完成阶段 0 ~ 9', await hasText('已完成阶段 0 ~ 9'))
   check('欢迎页列出自动化与批量运维', await hasText('自动化与批量运维'))
   check('头部出现「自动化」入口', await exists('[data-testid="open-automation"]'))
   check('头部出现「同步输入」入口', await exists('[data-testid="open-broadcast"]'))

@@ -25,17 +25,34 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 - ⚠️ **用 bash 后台 `&` 起的进程会随该条 bash 调用结束而死**（不是真正的常驻）。要跑「起服务 → 测试」这类组合，必须写在**同一个** Bash 调用里；跨调用存活请用工具的 `run_in_background`
 - ⚠️ **ssh2 服务端做跳板转发时，事件名是 `'tcpip'` 而不是 `'direct-tcpip'`**。见 `ssh2/lib/server.js` 的 `_onCHANNEL_OPEN`：判据是 `listenerCount(this, 'tcpip')`，emit 的是 `'tcpip'`，回调参数为 `{ destIP, destPort, srcIP, srcPort }`。名字注册错会让通道在握手期被自动拒绝（reason=1），且服务端不留任何日志
 - ⚠️ **`scrypt` 的 `maxmem` 默认只有 32MiB**，而 `128*N*r` 恰好等于该值时就会抛 `ERR_CRYPTO_INVALID_SCRYPT_PARAMS`（N=2^15, r=8 → 32MiB，正好踩线）。用高 N 必须显式传 `maxmem`
-- ⚠️ **脚本自清 scratch 目录会撞「单轮批量删除 > 50 文件」保护**（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`）。E2E 二次运行必然触发（首次目录为空）。放行写法（只影响该子进程，清理的是脚本自己的临时目录）：`env -u CODEBUDDY_SAFE_DELETE_BULK_STATE_DIR -u CODEBUDDY_TOOL_CALL_ID -u CODEBUDDY_SAFE_DELETE_BULK_GUARD node <脚本>`
+- ⚠️ **脚本自清 scratch 目录会撞「单轮批量删除 > 50 文件」保护**（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`）。E2E 二次运行必然触发（首次目录为空）。**不要再用 `env -u CODEBUDDY_SAFE_DELETE_BULK_*` 放行 —— 那个写法已失效且有害，会让 node 进程静默退出（exit 0、无输出、1~3 秒死），看起来像脚本卡住**。现在的做法是运行前先清掉残留目录，或给脚本换一个新的 WORK 目录名
 - ⚠️ **`puppeteer-core` 装在隔离 node workspace**，跑浏览器 E2E 必须 `export NODE_PATH="C:/Users/Administrator/.workbuddy/binaries/node/workspace/node_modules"`
 - ⚠️ **根 `npm run build` 偶发 rolldown 报错但单包构建正常**：是沙箱写入竞态，重跑即可，不是代码问题
 
-## 状态与进度（2026-09-29）
+## 状态与进度（2026-09-30）
 
-- 已完成：阶段 0（骨架）、阶段 1（终端主干）、阶段 2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）、阶段 3（SFTP 文件传输）、**阶段 4（Telnet 明文终端，端口 23，插入交付）**
-- **阶段 2 服务端 36/36 / 浏览器 18+9**；**阶段 3 服务端 75/75 / 浏览器 55/55**
-- **阶段 4 服务端 53/53**（`data/tmp/e2e-telnet.mjs`）／**浏览器 80/80**（`data/tmp/e2e-browser-telnet.mjs`）
-- 最新提交：`2339cb8`（阶段 4 代码）+ `8f497ff`（阶段 4 文档），已推送 GitHub
-- 下一步：阶段 5 端口转发与隧道（计划文档里原「阶段 4 端口转发」因 Telnet 插入已顺延为 5，后续 6~9）
+- 已完成：阶段 0（骨架）、1（终端主干）、2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）、3（SFTP）、4（Telnet，插入交付）、5（端口转发与隧道）、6（自动化与批量运维）、**7（日志与审计）**
+- 各阶段 E2E 计数见 README「端到端验证」表与 `docs/03-测试指南.md`
+- **阶段 7：服务端 69/69**（`data/tmp/e2e-logging.mjs`）／**浏览器 80/80**（`data/tmp/e2e-browser-logging.mjs`）
+- 下一步：**阶段 8 体验打磨**（主题与字体 / 快捷键 / 终端搜索 / 关键词高亮 / 分屏 / 桌面通知 / i18n），之后阶段 9 插件与打包
+
+## 日志与审计实现要点（阶段 7）
+
+- 三格式：`plain` / `timestamped` 走服务端流式追加；`html` 由**前端** `serializeAsHTML()` 序列化整份缓冲 → 60k 字符分片 → WS `log-html` → 服务端按 seq 严格递增装配，`final` 写 tmp 后 rename 原子替换
+- 目录名 `{清洗后的会话名}-{sha256(sessionId).slice(0,6)}`，映射持久化在 `LoggingStore.dirs`（会话改名目录不漂移）
+- **脱敏必须先按行对齐再替换**（逐 chunk 会被分片切断 `\S+`，敏感内容原样落盘）；`\n` 前的残余留在 `pendingLine`
+- 写入批量合并：256 KB 或 200 ms 刷盘（原先一行一次 appendFile，21 MB 要 30 万次系统调用）
+- 预览：按**字节**扫 `0x0A` 建行偏移索引（UTF-8 多字节序列不含 0x0A，按字节切行安全），任意窗口 O(1) seek；索引按 `size+mtime` 失效，LRU 8 个文件。用**分页**（500 行/页）而非虚拟滚动，行号是真实行号
+- HTML 快照落 `.html`（浏览器只对 `.html` 打开即渲染）；**不做脱敏**（字节级回放，替换会破坏标记结构）；底色跟随 `term.options.theme`
+- 审计 detail 入库前生成人读整句（shared 的 `describeAudit`）；客户端 IP 由 REST 的 `request.ip` / SFTP 队列的 `onTransfer` 回调带上
+
+### 日志与自动化排障教训
+
+- ⚠️ **终端有应用层背压**（`unackedBytes`，高水位 64 KB）。WS 客户端不回 `ack` 会让远端输出**永久暂停在 64 KB**（症状：输出卡住）。E2E 收集器每收 32 KB 回一次
+- ⚠️ **会话弹窗的凭据下拉读前端 store 快照**，store 只在解锁 / 删除节点凭据后刷新。E2E 用 API 建完凭据要 `page.reload()`，否则「选择凭据」假通过、保存时校验失败、弹窗不关
+- ⚠️ **给 React 受控 select 填值前必须等 option 出现**：对不存在的 option 赋值会被浏览器静默置空
+- ⚠️ **`typeLine` 只作用于 `[data-active="true"]` 的终端**：多标签要先点 `[role="tab"]` 切回目标终端
+- ⚠️ **拍回放截图要用 `replayPage.screenshot()`**，`page.screenshot()` 拍的是主应用界面
 
 ## Telnet 实现要点（阶段 4）
 

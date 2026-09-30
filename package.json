@@ -1,6 +1,6 @@
 {
   "name": "webterm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "WebTerm —— 基于 Node.js 的浏览器 SSH 客户端（对标 SecureCRT）",
@@ -12,6 +12,9 @@
     "packages/server",
     "packages/web"
   ],
+  "bin": {
+    "webterm": "bin/webterm.mjs"
+  },
   "scripts": {
     "predev": "npm run build -w @webterm/shared",
     "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w @webterm/server\" \"npm run dev -w @webterm/web\"",
@@ -20,7 +23,10 @@
     "pretypecheck": "npm run build -w @webterm/shared",
     "typecheck": "npm run typecheck -w @webterm/server && npm run typecheck -w @webterm/web",
     "prestart": "npm run build -w @webterm/shared",
-    "start": "npm run start -w @webterm/server"
+    "start": "npm run start -w @webterm/server",
+    "prepackage": "npm run build",
+    "package": "node scripts/package-portable.mjs",
+    "check:dockerfile": "node scripts/check-dockerfile.mjs"
   },
   "devDependencies": {
     "concurrently": "^10.0.5",

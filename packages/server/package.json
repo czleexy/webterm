@@ -1,6 +1,6 @@
 {
   "name": "@webterm/server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "WebTerm 服务端：Fastify + SSH/SFTP 协议栈",
@@ -9,7 +9,7 @@
     "dev": "tsx watch --clear-screen=false src/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "start": "node dist/index.js"
+    "start": "node scripts/start-production.mjs"
   },
   "dependencies": {
     "@fastify/static": "^10.1.4",

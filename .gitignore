@@ -29,9 +29,25 @@ dist/
 !/data/tmp/e2e-logging.mjs
 !/data/tmp/e2e-browser-logging.mjs
 !/data/tmp/e2e-browser-phase8.mjs
+!/data/tmp/e2e-plugin.mjs
+!/data/tmp/e2e-browser-plugin.mjs
+!/data/tmp/probe-release.mjs
+!/data/tmp/probe-plugins.mjs
+
+# 示例插件随仓库分发：它是插件机制的参考实现，也是「把目录放进去就能用」的示范。
+# 目录必须先放行，否则 git 不会下探，里面的 ! 规则全部无效。
+!/data/plugins/
+!/data/plugins/**
 
 # 子包内的运行时数据目录（服务端默认数据目录等）
 packages/*/data/
+
+# 打包产物（scripts/package-portable.mjs 的输出）
+release/
+
+# docker compose 示例挂载出来的宿主目录（含加密凭据库）
+docker-data/
+docker-files/
 
 # 环境变量
 .env

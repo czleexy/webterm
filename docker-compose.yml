@@ -1,0 +1,57 @@
+# WebTerm 的 Compose 示例。
+#
+#   docker compose up -d --build
+#   # 打开 http://localhost:8080
+#
+# 两个挂载点的分工：
+#   ./docker-data  → /data    应用数据（SQLite 库、加密凭据、日志、插件）
+#   ./docker-files → /files   文件面板「本地」一侧的根目录
+#
+# 这两个目录都**必须**留在宿主机上：/data 里是加密凭据库，容器重建就没了
+# 等于所有会话要重配；/files 是文件传输的对端目录，本来就不属于容器。
+
+services:
+  webterm:
+    build:
+      context: .
+    image: webterm:latest
+    container_name: webterm
+    restart: unless-stopped
+
+    ports:
+      # 只绑回环地址：这是能开 SSH 出去、能读写文件的进程，
+      # 默认不给局域网暴露。确实需要对外时改成 "8080:8080"，
+      # 并自行在前面套一层带认证的反向代理。
+      - '127.0.0.1:8080:8080'
+
+    environment:
+      # 容器里必须绑 0.0.0.0，否则宿主机的端口映射连不进来
+      WEBTERM_HOST: 0.0.0.0
+      WEBTERM_PORT: '8080'
+      WEBTERM_DATA_DIR: /data
+      WEBTERM_LOCAL_ROOT: /files
+      WEBTERM_LOG_LEVEL: info
+      # 容器内绑非回环地址的显式确认。WebTerm 目前**没有内置访问认证**，
+      # 保险库主密码保护的是保存的凭据而不是网页访问；所以上面才把宿主端口
+      # 绑在 127.0.0.1。要对外提供服务，请在前面加一层带认证的反向代理。
+      WEBTERM_ALLOW_INSECURE_LAN: '1'
+      # 会话日志与审计记录默认全量保留；按需调整
+
+    volumes:
+      # 用具名卷而不是 bind mount，是因为 bind mount 到一个**尚不存在**的宿主目录时，
+      # Docker 会用 root:root 建它，而容器里跑的是非 root 的 node 用户 ——
+      # 结果就是启动后写数据库直接 EACCES。具名卷会从镜像里继承属主，开箱即用。
+      #
+      # 想改用宿主目录（比如把 /files 指到你的下载目录），先手动把属主改成 1000:1000：
+      #   mkdir -p ./docker-data ./docker-files
+      #   sudo chown -R 1000:1000 ./docker-data ./docker-files
+      # 然后换成：- ./docker-data:/data  和  - ./docker-files:/files
+      - webterm-data:/data
+      - webterm-files:/files
+
+    # 有终端会话时内存占用会上去，给一个明确的上限而不是让它吃满宿主
+    mem_limit: 1g
+
+volumes:
+  webterm-data:
+  webterm-files:

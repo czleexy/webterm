@@ -1,0 +1,33 @@
+# Docker 构建上下文的白名单/黑名单。
+#
+# 目标：让 `COPY . .` 只带走构建必需的东西（源码、配置、清单），
+# 同时**不能让任何运行时数据混进镜像** —— data/ 里有加密凭据库、私钥、
+# 会话日志和 known_hosts，打进镜像就等于把用户的机密分发出去。
+
+# 依赖与产物：镜像内部自己装、自己构建，不留宿主机上的残骸
+node_modules
+**/node_modules
+release
+**/dist
+**/*.tsbuildinfo
+
+# 版本控制与编辑器
+.git
+.gitattributes
+.vscode
+.idea
+.workbuddy
+
+# 文档与测试脚本不进镜像
+docs
+**/*.log
+
+# 环境变量文件：.env.example 是给人看的模板，保留；真实 .env 绝不进镜像
+.env
+.env.local
+.env.*.local
+
+# 运行时数据：只放行示例插件（data/plugins），其余（数据库、日志、私钥、tmp）全部挡掉。
+# 这里必须用 `data/*` 而不是 `data` —— 父目录被整体排除后，`!` 规则无法再放行其中内容。
+data/*
+!data/plugins

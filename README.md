@@ -4,11 +4,11 @@
 
 服务跑在本机负责协议栈与连接管理，浏览器只负责渲染与交互。免安装、跨平台，配置与会话集中在一处管理。
 
-> 当前进度：**阶段 8（体验打磨）已交付** —— 设置中心（外观 / 高亮 / 快捷键 / 通知 / 语言五页）、UI 主题三态与 9 套终端配色、字体与光标设置、`Ctrl+F` 终端搜索（正则 / 计数 / 上下跳转）、关键词高亮规则、2/4 宫格分屏（可拖分隔条）、可自定义快捷键（含冲突与浏览器保留键提示）、Toast 与桌面通知、中英双语、窄屏抽屉与骨架屏。
-> 前一阶段：阶段 7（日志与审计）—— 三种会话日志格式（纯文本 / 带时间戳 / HTML 彩色快照）、按天归档与 20 MB 轮转、保留天数定时清理、可配正则脱敏、日志管理页（筛选 / 分页预览 / 下载 / 删除）、审计流水（含客户端 IP）。
-> 更早：阶段 6（自动化与批量运维）—— 触发器、按钮栏多步宏、沙箱脚本、同步输入广播、批量执行（并发 + 结果表 + 导出 CSV）。
+> 当前进度：**阶段 9（插件机制与打包发布）已交付，全部阶段收口** —— 插件宿主（`plugin.json` 清单 + 触发器动作 / 命令 / 面板三类注册项 + 受限 Host API）、全局事件通道 `/ws/events`、示例插件 `heartbeat-monitor`，以及三种发布形态：**npm 全局包（`webterm` 命令）**、**Docker 镜像**、**便携目录**。
+> 前一阶段：阶段 8（体验打磨）—— 设置中心（外观 / 高亮 / 快捷键 / 通知 / 语言五页）、UI 主题三态与 9 套终端配色、`Ctrl+F` 终端搜索、关键词高亮、2/4 宫格分屏、可自定义快捷键、Toast 与桌面通知、中英双语、响应式。
+> 更早：阶段 7（日志与审计）、阶段 6（自动化与批量运维）、阶段 5（端口转发与隧道）、阶段 4（Telnet）、阶段 3（SFTP）、阶段 2（会话库与保险库）、阶段 1（终端主干）。
 > 详细设计见 [`docs/01-功能框架与需求说明书.md`](docs/01-功能框架与需求说明书.md) 与 [`docs/02-实现计划.md`](docs/02-实现计划.md)；
-> 测试方法见 [`docs/03-测试指南.md`](docs/03-测试指南.md)；界面截图见 [`docs/screenshots/`](docs/screenshots/)。
+> 测试方法见 [`docs/03-测试指南.md`](docs/03-测试指南.md)；界面截图见 [`docs/screenshots/`](docs/screenshots/)。变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ---
 
@@ -41,6 +41,68 @@ npm run dev
 点击「新建连接」，先选协议（**SSH** / **Telnet**）再填主机信息即可建立终端。可先点「测试连接」确认连通性：SSH 会回报协商算法与主机密钥指纹，Telnet 会回报设备欢迎语。
 
 > 没有可用远端主机时，用内置的 mock 服务端即可完整体验：`node packages/server/dev/mock-ssh-server.mjs`（2222）或 `node packages/server/dev/mock-telnet-server.mjs`（2323），详见「本地联调」一节。
+
+---
+
+## 生产部署
+
+三种发布形态跑的是**同一份产物**，选一个即可。共同前提：Node.js ≥ 22.12.0（Docker 镜像自带）。
+
+### ① 源码构建后直接跑
+
+```bash
+npm install
+npm run build     # shared → server → web
+npm start         # 生产模式，访问 http://127.0.0.1:8080
+```
+
+`npm start` 会显式以生产模式启动（托管前端产物、JSON 日志）。数据目录默认为 `packages/server/data`。
+
+### ② 便携目录 / npm 包
+
+```bash
+npm run package              # 产出 release/webterm/（自包含：产物 + 生产依赖 + 示例插件）
+cd release/webterm
+node bin/webterm.mjs         # 或 Windows 双击 start.cmd、Linux/macOS 执行 ./start.sh
+```
+
+`release/webterm/` 同时就是 npm 包的内容，所以也能当全局命令装：
+
+```bash
+cd release/webterm && npm pack            # 得到 webterm-0.2.0.tgz
+npm i -g ./webterm-0.2.0.tgz              # 之后直接敲 webterm
+# 或者不安装，直接跑：npx ./webterm-0.2.0.tgz
+```
+
+`webterm` 命令的选项：
+
+```
+webterm [选项]
+  -p, --port <端口>      监听端口（默认 8080）
+  -H, --host <地址>      监听地址（默认 127.0.0.1）
+  -d, --data-dir <目录>  数据目录（默认 ~/.webterm）
+  -h, --help / -v, --version
+```
+
+> 便携目录与全局命令在**数据目录上刻意不同**：便携目录用自身目录下的 `data/`（整个目录可以拷走），
+> 全局命令用 `~/.webterm`（`npx` / 全局安装时进程工作目录是随机的，把库落在 `./data` 会让人
+> 「换个目录就丢一次数据」）。两者都可以用 `WEBTERM_DATA_DIR` 或 `-d` 覆盖。
+
+### ③ Docker
+
+```bash
+docker build -t webterm .
+docker run -p 8080:8080 webterm           # 打开 http://localhost:8080
+```
+
+或用 Compose（宿主端口只绑回环，数据落在具名卷里）：
+
+```bash
+docker compose up -d --build
+```
+
+两个挂载点：`/data` 放应用数据（SQLite、加密凭据、日志、插件），`/files` 是文件面板「本地」一侧的根 ——
+容器里没有「用户家目录」这个概念，把这侧锁在一个挂载点上，比默认暴露整个容器文件系统合理。
 
 ---
 
@@ -327,6 +389,97 @@ data/logs/
 
 ---
 
+## 阶段 9 已交付能力（插件机制与打包发布）
+
+一句话概括插件机制的分工：**宿主只做读写，不做渲染**。插件把「我有哪些触发器动作 / 命令 / 面板」
+注册出来，界面把它们渲染成下拉项、按钮、数据表；插件不碰任何 UI 代码。这样插件作者只需关心自己的逻辑，
+而插件面板的主题、可访问性、暗色适配天然一致。
+
+| 能力 | 说明 |
+| --- | --- |
+| 目录即插件 | 扫描 `data/plugins/*/plugin.json`；「重新扫描目录」按钮或重启即可发现新插件，卸载就是删目录 |
+| 三类注册项 | `registerTriggerAction`（出现在触发器编辑器的动作下拉里）/ `registerCommand`（插件卡片上的按钮，可返回一句结果）/ `registerPanel`（表格数据） |
+| 事件订阅 | `on('session:opened' / 'session:closed' / 'session:output')`，供插件跟踪会话生命周期 |
+| Host API | `host.sessions.*`（列举 / 查询 / 发送）、`host.getConfig` / `host.config`、`host.log`、`host.notify` |
+| 插件面板 | 顶栏「插件」入口；列表按「有问题的排最前」排序，出错时顶栏带角标，出错原因整段可读 |
+| 配置热更新 | 面板上改完保存**立即生效，不需要重载插件**；越界值按清单声明的范围钳制后再入库 |
+| 启停与重载 | 停用即卸载（定时器与事件订阅一并回收）；改了插件代码可「重新加载」 |
+| 全局事件通道 | `WS /ws/events` 广播插件通知；断线指数退避重连（1s→30s），协议级 ping 保活 30 秒 |
+| 示例插件 | `data/plugins/heartbeat-monitor`：定时给会话发心跳、长时间无回应则告警、提供「心跳确认」触发器动作、三个命令、一张会话存活状态表 |
+| 打包发布 | `npm run package` 产出便携目录 / npm 包；`Dockerfile` + `docker-compose.yml`；`bin/webterm.mjs` 是统一 CLI 入口 |
+
+### 插件是怎么被隔离的（以及没有隔离什么）
+
+插件在 `node:vm` 上下文中执行，**`node:vm` 不是安全沙箱** —— 这一点必须先说清楚，免得被当成安全边界。
+它的作用是三件具体的事：
+
+1. **限定 API 面**：上下文中没有 `require` / `process` / `Buffer` / `fetch`，插件能做的只有 Host API 给定的那些；
+2. **可控生命周期**：插件登记的定时器由运行时记录，卸载时统一 `clear` 且都 `unref()` 过，保证进程能正常退出；
+3. **崩溃隔离**：入口抛错只让这个插件进入 `error` 状态并在界面上如实显示原因，不影响其他插件与终端。
+
+清单里的 `permissions`（如 `session:write` / `notify`）目前**只作界面提示，不做拦截** —— 写成一个会拦截的
+权限系统需要更细的 API 分面设计，而现在标榜它反而会让人误以为有一道不存在的墙。
+
+### 插件开发
+
+最小插件只需要两个文件。`data/plugins/hello/plugin.json`：
+
+```json
+{
+  "id": "hello",
+  "name": "你好插件",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "main": "index.js",
+  "config": [
+    { "key": "greeting", "label": "问候语", "type": "string", "default": "你好" }
+  ]
+}
+```
+
+`data/plugins/hello/index.js`：
+
+```js
+// 全局 `host` 是唯一的入口，不需要 import
+host.log('info', '你好插件已加载')
+
+host.on('session:opened', (event) => {
+  host.log('info', '来了一个新会话：' + event.session.title)
+})
+
+host.registerTriggerAction(
+  { id: 'greet', label: '打个招呼', description: '在命中行里打一声招呼' },
+  (ctx) => {
+    // ctx.session 可能为空（规则绑定的会话已关闭），要先判
+    if (!ctx.session) return
+    ctx.send('echo ' + host.getConfig('greeting', '你好') + '\r')
+  },
+)
+
+host.registerCommand({ id: 'hi', label: '立即打招呼' }, () => {
+  return '当前有 ' + host.sessions.list().length + ' 个会话'
+})
+
+host.registerPanel({ id: 'sessions', title: '会话一览' }, () => ({
+  columns: ['会话', '协议', '主机'],
+  rows: host.sessions.list().map((s) => [s.title, s.protocol, s.host + ':' + s.port]),
+}))
+
+host.notify('你好插件', '已就绪')
+```
+
+放好之后点插件面板里的「重新扫描目录」即可看到。几条实践建议：
+
+- **配置按需读取，别抄进常量**：在定时器或回调里调 `host.getConfig(key, fallback)`，这样用户在界面上改完
+  下一个 tick 就生效，不需要重载、也不会丢掉插件已积累的内存状态。
+- **`session:output` 是热路径**：每次远端输出都会触发。里面只做一次 `indexOf` 之类的轻操作，别做正则全扫
+  或在十万行里搜关键字，那会实打实拖慢终端。
+- **触发器动作要同步返回**：它在「远端每输出一行」的链路上执行。异步结果请写插件日志、或用 `host.notify` 通知。
+- **插件的失败不会影响终端输出**：动作抛错会记进规则统计与插件日志，终端照常工作。
+- 每个插件的外部能力都很小，副作用请控制在 `data/` 与自己的状态里。
+
+---
+
 ## 可用脚本
 
 在**根目录**执行：
@@ -336,7 +489,11 @@ data/logs/
 | `npm run dev` | 并行启动后端（tsx watch）与前端（Vite），Vite 自动代理 `/api` 与 `/ws` 到后端 |
 | `npm run typecheck` | 对 server 与 web 做 TypeScript 严格模式类型检查 |
 | `npm run build` | 构建 `packages/shared` → `packages/server` → `packages/web` |
-| `npm start` | 启动生产服务，由后端托管前端产物，访问 <http://127.0.0.1:8080> |
+| `npm start` | 启动生产服务（显式生产模式），由后端托管前端产物，访问 <http://127.0.0.1:8080> |
+| `npm run package` | 构建后产出可发布的 `release/webterm/`（便携目录 + npm 包内容，并安装生产依赖） |
+| `npm run check:dockerfile` | 不构建镜像的静态自检：Dockerfile 引用的路径是否存在、`.dockerignore` 是否误挡了必需文件 |
+
+`npm run package` 支持两个参数：`--out <目录>` 换输出位置、`--no-install` 只铺文件不装依赖（离线时用）。
 
 单独操作某个子包（例如只跑后端）：
 
@@ -351,18 +508,25 @@ npm run dev -w @webterm/web
 
 ```
 webterm/
-├─ docs/                     设计与计划文档（含界面截图）
+├─ bin/
+│  └─ webterm.mjs            CLI 启动器（npm 包的 bin 入口，也兼容源码仓库布局）
+├─ scripts/
+│  ├─ package-portable.mjs  打包出可发布目录（便携目录 / npm 包内容）
+│  └─ check-dockerfile.mjs  Dockerfile 静态自检（无 docker 环境下的兜底）
+├─ Dockerfile              生产镜像（多阶段：构建 → 裁到生产依赖 → 非 root 运行）
+├─ docker-compose.yml      Compose 示例（具名卷 / 只绑回环端口）
+├─ docs/                   设计与计划文档（含界面截图）
 ├─ packages/
 │  ├─ shared/                前后端共享常量与类型（必须先构建）
-│  │  └─ src/{constants,api,ws,sftp,tunnel}.ts
+│  │  └─ src/{constants,api,ws,sftp,tunnel,automation,logging,plugin}.ts
 │  ├─ server/                Fastify 服务端
 │  │  ├─ dev/mock-ssh-server.mjs     开发用 SSH 测试服务端（含 SFTP 子系统 / 跳板 / 远程转发）
 │  │  ├─ dev/mock-telnet-server.mjs  开发用 Telnet 测试设备（选项协商 / NAWS / 回显开关）
 │  │  └─ src/
 │  │     ├─ index.ts         进程入口（加载配置 → 建目录 → 监听）
 │  │     ├─ app.ts           Fastify 实例装配 + 静态托管 + 404 处理
-│  │     ├─ config/          环境变量校验（zod）
-│  │     ├─ db/              SQLite 打开与迁移、会话库 DAO
+│  │     ├─ config/          环境变量校验（zod，含局域网安全闸）
+│  │     ├─ db/              SQLite 打开与迁移、会话库 / 自动化 / 日志 / 插件 DAO
 │  │     ├─ security/        保险库（主密码 KDF + AES-GCM）、凭据存取
 │  │     ├─ ssh/             算法档案 / 连接建立 / 跳板链 / 主机密钥 / 错误分类
 │  │     ├─ telnet/          协商状态机 / 传输层 / 错误分类（明文终端协议栈）
@@ -370,25 +534,30 @@ webterm/
 │  │     ├─ tunnel/          端口转发：本地 / 远程 / SOCKS5 动态 + 隧道管理器 + 错误分类
 │  │     ├─ automation/      触发器引擎 / 宏 / 沙箱脚本（vm 隔离 + worker 可终止）
 │  │     ├─ logging/         会话日志写入器（三格式 / 轮转 / 脱敏） + 行偏移索引 + 日志服务
+│  │     ├─ plugin/          插件清单校验 / vm 沙箱 / 插件运行时（注册项、日志、生命周期）
+│  │     ├─ events/          全局事件通道的广播中枢（插件通知等）
 │  │     ├─ terminal/        终端会话（双传输：SSH / Telnet） / 会话注册表 / 编码桥
 │  │     └─ api/
-│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals / vault / credentials / library / sftp / tunnels / automation / logs / audit）
+│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals / vault / credentials / library / sftp / tunnels / automation / logs / audit / plugins）
 │  │        ├─ resolver.ts   会话记录 → 明文连接参数
-│  │        └─ ws/           终端与 SFTP WebSocket 端点
+│  │        └─ ws/           终端 / SFTP / 全局事件三类 WebSocket 端点
 │  └─ web/                   React 前端
 │     └─ src/
 │        ├─ api/             REST 请求封装
-│        ├─ components/      UI 组件（门禁 / 弹窗 / 标签栏 / 会话库侧栏 / 隧道面板）
+│        ├─ components/      UI 组件（门禁 / 弹窗 / 标签栏 / 会话库侧栏 / 隧道面板 / 插件面板）
 │        ├─ terminal/        xterm 封装 / 连接 Hook / 配色 / HTML 快照序列化
 │        ├─ sftp/            SFTP 双栏工作区 / 文件列表 / 传输抽屉
 │        ├─ automation/      自动化面板 / 宏按钮栏 / CodeMirror 脚本编辑器 / 广播与批量执行
 │        ├─ logs/            日志与审计面板（会话日志 / 审计 / 设置三标签）
-│        ├─ store/           标签页 / 保险库 / 会话库 / SFTP / 隧道状态（Zustand）
+│        ├─ plugins/         插件面板 / 插件卡片 / 全局事件通道客户端
+│        ├─ store/           标签页 / 保险库 / 会话库 / SFTP / 隧道 / 插件状态（Zustand）
 │        ├─ theme/           主题状态（Zustand persist）
 │        └─ utils/
 └─ data/                     运行时数据（已被 git 忽略）
-   ├─ webterm.db              SQLite（会话库 + 加密凭据 + 审计流水）
+   ├─ webterm.db              SQLite（会话库 + 加密凭据 + 自动化 + 审计流水 + 插件状态）
    ├─ known_hosts.json        主机密钥指纹记录（TOFU）
+   ├─ plugins/                插件目录：放进去一个目录就等于装了一个插件
+   │  └─ heartbeat-monitor/   示例插件（可直接抄的骨架）
    └─ logs/                   会话日志（按「会话名-短哈希」归档，按天分文件）
 ```
 
@@ -400,14 +569,38 @@ webterm/
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `NODE_ENV` | `development` | `production` 时关闭日志美化并托管前端产物 |
-| `WEBTERM_HOST` | `127.0.0.1` | 监听地址。改为 `0.0.0.0` 可局域网访问，**但必须先设置访问密码** |
+| `NODE_ENV` | `development` | `production` 时关闭日志美化并托管前端产物。**`npm start` 与 `webterm` 命令会自动设为生产模式** |
+| `WEBTERM_HOST` | `127.0.0.1` | 监听地址。非回环地址需要同时设下面那项，否则拒绝启动 |
+| `WEBTERM_ALLOW_INSECURE_LAN` | `0` | 确认「我知道开放局域网当前没有内置认证」。见下节「安全边界」 |
 | `WEBTERM_PORT` | `8080` | 监听端口 |
-| `WEBTERM_DATA_DIR` | `./data` | 数据目录 |
+| `WEBTERM_DATA_DIR` | `./data`（CLI 形态为 `~/.webterm`） | 数据目录 |
 | `WEBTERM_LOG_LEVEL` | `info` | `fatal`/`error`/`warn`/`info`/`debug`/`trace`/`silent` |
 | `WEBTERM_ALLOW_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | WebSocket / CORS 来源白名单 |
+| `WEBTERM_LOCAL_ROOT` | 用户家目录 | 文件面板「本地」一侧的根目录，**必须已存在**。开发态建议设成 `packages/web/dist`，容器里是 `/files` |
+| `WEBTERM_SFTP_CONCURRENCY` | `3` | SFTP 传输并发上限（1~16） |
+| `WEBTERM_WEB_DIR` | 按源码布局推断 | 前端产物目录。发布形态由 `bin/webterm.mjs` 自动注入，一般不用手填 |
 
 环境变量校验失败时服务会直接退出并打印具体出错字段，不会带着错误配置运行。
+
+### 安全边界（务必读一下）
+
+WebTerm 的访问控制目前**只有一条**：默认只监听 `127.0.0.1`。也就是说：
+
+- **没有** HTTP 访问认证。需求文档里的「服务访问密码」（F7.4）**尚未实现**。保险库主密码保护的是
+  **保存的凭据**，不是网页本身的访问 —— 它挡不住「谁能打开这个界面」。
+- 一旦绑到 `0.0.0.0`，同网段任何人都能打开界面，并以这台机器的身份发起 SSH / SFTP / 隧道操作。
+  这正是非回环监听必须显式设置 `WEBTERM_ALLOW_INSECURE_LAN=1` 的原因：它不是认证，
+  只是把「悄悄不安全」变成「明确的不安全」。
+- 需要远程访问时，推荐的做法是保持监听回环 + SSH 端口转发：
+
+  ```bash
+  ssh -L 8080:127.0.0.1:8080 你的用户名@这台机器
+  ```
+
+  或者把服务放在带认证的反向代理（Nginx / Caddy + basic auth、mTLS 等）之后。
+  不要把本服务直接暴露到公网。
+
+`docker-compose.yml` 里宿主端口只绑 `127.0.0.1:8080`，也是同一个道理。
 
 ---
 
@@ -416,7 +609,39 @@ webterm/
 > 阶段 8（体验打磨）**没有新增任何接口**：主题、字体、快捷键、高亮规则、通知开关、语言这些全部是纯前端偏好，
 > 存在浏览器 `localStorage` 里（`webterm.settings` / `webterm.theme`），服务端不参与。
 > 分屏布局（`useLayoutStore`）**刻意不持久化** —— 它引用的是当前标签页里的终端会话，而标签本身活不过刷新。
-> 因此下面这份清单与阶段 7 结束时一致。
+>
+> 阶段 9 新增了插件接口与一条全局事件通道，见下面的「插件」与 `WS /ws/events` 两节。
+
+### 插件（阶段 9）
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/plugins` | 插件列表：每个插件带 `state`（`ready` / `error` / `disabled`）、`error`（出错原因整段文本）、`triggerActions` / `commands` / `panels` / `subscriptions`、生效配置、`mtime` 与 `loadedAt`、最近 200 条日志；响应另带 `dir`（插件目录）与 `apiVersion` |
+| `POST /api/plugins/rescan` | 重新扫描插件目录（往目录里放了新插件之后用），返回与上面同样的结构 |
+| `GET /api/plugins/:id` | 单个插件详情 |
+| `PATCH /api/plugins/:id` | `{ enabled?, config? }`。**配置是整体替换语义**：按清单声明的类型做转换、按 `min`/`max` 钳制、丢弃未知键之后才落库，所以越界值不会先写进去再读出来钳 |
+| `POST /api/plugins/:id/reload` | 重载插件（改了插件代码之后用）。会清空插件内存状态，重新走一遍加载与注册 |
+| `POST /api/plugins/:id/commands/:commandId` | 执行插件注册的命令，返回 `{ ok, message }`。`ok:false` 表示「插件跑了但失败了」，仍是 200 |
+| `GET /api/plugins/:id/panels/:panelId` | 取面板数据（`columns` / `rows` 有上限截断，避免插件把界面撑爆） |
+
+错误码：插件不存在 → 404；清单非法 / 参数非法 / 重复注册 → 400；插件已停用而调它的命令或面板 → **409 `UNAVAILABLE`**（不是 400：请求本身没问题，是当前状态不允许，界面据此提示「请先启用」）；插件自身抛错 → 200 + `ok:false`（那是「运行结果」而不是「接口失败」）。
+
+### `WS /ws/events`（全局事件通道）
+
+一条连接管全部「不属于任何单个终端」的消息，目前有两类服务端事件：
+
+| 事件 | 触发时机 |
+| --- | --- |
+| `plugin-notify` | 插件调用 `host.notify(title, body, level)`；带 `pluginId` / `pluginName` / `level` / `at` |
+| `plugins-changed` | 插件列表发生变化（重新扫描、启停、重载），前端据此刷新插件面板 |
+
+与终端 WS 的三点不同，都是刻意的：
+
+1. **不传令牌**。这条通道只推「插件发了条通知」这类不含会话数据的消息，服务端默认也只监听回环地址；
+2. **断线自动重连**（指数退避 1s→30s 封顶）。没有重连就意味着「重启服务端之后再收不到插件通知」且毫无提示；
+3. **只做展示**。它不承载任何业务状态，断了不会让谁的终端不工作，所以重连失败只记控制台、不弹错误打扰用户。
+
+服务端每 30 秒发一次协议级 ping 保活，浏览器自动回 pong —— 前端一行都不用写。
 
 ### `GET /api/health`
 
@@ -652,6 +877,15 @@ node packages/server/dev/mock-telnet-server.mjs
 - 会话配置是**按 `protocol` 判别的联合类型**，SSH / Telnet 的差异止步于类型与 UI 层，`TerminalSession` 之上（编码桥、背压、标签生命周期）完全共用一套实现。新增协议时按这个边界扩展。
 - 隧道规格同样是**按 `type` 判别的联合类型**（`local` / `remote` / `dynamic`）—— `dynamic` 没有目标地址，写成可选字段会让矛盾配置在类型上无法被发现。
 - 会话关闭时**先撤销隧道（含远端 `cancel-tcpip-forward`）、再断 SSH 连接** —— 顺序反了远端监听就撤不掉，端口会一直被占着。
+- 新增**触发器动作类型**时必须同步 `packages/shared` 的 `TRIGGER_ACTION_TYPES`：它是落库读回的白名单，
+  漏加的表现是「规则能存、接口能查、运行时什么都不做且不报错」——最难查的一类问题。
+- 插件的**配置热更新靠共享同一个 config 对象引用**（`updateConfig` 就地把对象改掉），不是重载插件；
+  重载会清空插件已经积累的内存状态。插件作者也应按「读的时候才去取配置」来写。
+- 插件注册的定时器一律 `unref()` 并登记到运行时，卸载时统一 `clear` —— 否则进程关不掉，
+  表现为「`SIGTERM` 之后要等很久才退出」。
+- 发布包的目录结构由 `scripts/package-portable.mjs` 决定；服务端不再靠相对路径猜自己在什么形态里运行，
+  而是接受 `WEBTERM_WEB_DIR`（由 `bin/webterm.mjs` 注入）。加新的运行期文件时记得一起更新
+  `package.json` 的 `files` 与 `Dockerfile` 的 `COPY`。
 
 ---
 
@@ -668,7 +902,7 @@ node packages/server/dev/mock-telnet-server.mjs
 | 6 自动化与批量运维 | ✅ 已完成 |
 | 7 日志与审计 | ✅ 已完成 |
 | 8 体验打磨 | ✅ 已完成 |
-| 9 插件机制与打包发布 | 待开发 |
+| 9 插件机制与打包发布 | ✅ 已完成 |
 
 ### 端到端验证
 
@@ -680,14 +914,67 @@ node packages/server/dev/mock-telnet-server.mjs
 | 阶段 4 Telnet 服务端 | `data/tmp/e2e-telnet.mjs` | 53/53 |
 | 阶段 4 Telnet 浏览器 | `data/tmp/e2e-browser-telnet.mjs` | 80/80 |
 | 阶段 5 隧道服务端 | `data/tmp/e2e-tunnel.mjs` | 65/65 |
-| 阶段 5 隧道浏览器 | `data/tmp/e2e-browser-tunnel.mjs` | 97/97 |
+| 阶段 5 隧道浏览器 | `data/tmp/e2e-browser-tunnel.mjs` | 98/98 |
 | 阶段 6 自动化服务端 | `data/tmp/e2e-automation.mjs` | 196/196 |
 | 阶段 6 自动化浏览器 | `data/tmp/e2e-browser-automation.mjs` | 137/137 |
 | 阶段 7 日志服务端 | `data/tmp/e2e-logging.mjs` | 69/69 |
 | 阶段 7 日志浏览器 | `data/tmp/e2e-browser-logging.mjs` | 81/81 |
 | 阶段 8 体验打磨浏览器 | `data/tmp/e2e-browser-phase8.mjs` | 168/168 |
+| 阶段 9 插件服务端 | `data/tmp/e2e-plugin.mjs` | 95/95 |
+| 阶段 9 插件浏览器 | `data/tmp/e2e-browser-plugin.mjs` | 80/80 |
+
+阶段 9 另外用 `data/tmp/probe-release.mjs` 把**三种发布形态**各跑一遍（启动 → 探活 → 取首页与静态资源 → 随包示例插件加载 → `SIGTERM` 5 秒内退出），每种 10/10：
+
+```bash
+node data/tmp/probe-release.mjs --label cli --entry bin/webterm.mjs --cwd . --port 8112
+node data/tmp/probe-release.mjs --label portable --entry release/webterm/bin/webterm.mjs --cwd release/webterm --port 8113 \
+  --plugindir release/webterm/examples/plugins/heartbeat-monitor --expectplugin heartbeat-monitor
+```
 
 阶段 8 只改前端（设置 / 主题 / 搜索 / 高亮 / 分屏 / 快捷键 / 通知 / i18n / 响应式），
-没有服务端改动，因此服务端套件沿用阶段 7 的结果；阶段 7 的浏览器套件在阶段 8 之后重跑过，仍全绿。
+没有服务端改动，因此服务端套件沿用阶段 7 的结果；阶段 7 及其之前的浏览器套件在阶段 9 之后重跑过，仍全绿。
+阶段 5 的那次重跑顺带修掉了一处**测试判据**问题：原来用 `netstat -ano` 判断端口是否在监听，而 `execSync`
+起 `cmd.exe` 在受限环境里会 `EBUSY`，「查不了」和「没监听」在结果上无法区分；已改成反向 bind 验证
+（能再 bind 成说明没人监听）——既去掉了对外部命令的依赖，也比 netstat 更接近「这个端口现在归谁」。
 
 运行方式（含端口分配与 `NODE_PATH` 等前置条件）见 [`docs/03-测试指南.md`](docs/03-测试指南.md)。
+
+---
+
+## 常见问题（FAQ）
+
+**Q：`npm start` 打开是一片纯文本，没看到界面？**
+先执行 `npm run build`。生产模式才托管前端产物，没构建时首页会退回一段纯文本横幅（日志里也会提示
+「未找到前端产物」）。另外注意用 `http://localhost:5173` 访问会失败 —— 那是开发态的 Vite 地址，
+生产态只有服务端端口（默认 8080）。
+
+**Q：数据存在哪？换台机器怎么带走？**
+默认在数据目录（`WEBTERM_DATA_DIR`）。拷走这个目录就等于带走了会话库、加密凭据、日志、审计与插件状态。
+凭据是加密的，但主密码**不在数据目录里** —— 换个地方要能解开，得记得住它。
+
+**Q：忘记主密码了怎么办？**
+没有任何找回途径，这是设计使然（凭据的密钥由主密码派生，服务端不存、也无法重建）。
+只能清掉 `webterm.db` 重建，代价是所有凭据与会话要重新录入。
+
+**Q：浏览器刷新后还要重新解锁吗？**
+不用。解锁状态保存在**服务端进程内存**里，刷新浏览器不影响；只有服务端重启才需要重新解锁。
+
+**Q：为什么 `127.0.0.1:5173` 打不开？**
+Vite 默认绑 `localhost`，用 `127.0.0.1` 访问会失败。开发态请用 `http://localhost:5173`。
+
+**Q：为什么绑 `0.0.0.0` 启动直接被拒了？**
+见「安全边界」：当前版本没有内置的 HTTP 访问认证。要么用 SSH 端口转发，要么确认风险后显式设置
+`WEBTERM_ALLOW_INSECURE_LAN=1`。
+
+**Q：插件加载失败，界面只给了原因，怎么快速定位？**
+插件卡片顶部有状态徽标与整段错误文本，下面「日志」折叠区是插件自己的 `host.log` 输出。
+改完代码在卡片上点「重新加载」即可（卡片会显示「文件已改动」提示），不用重启服务端。
+
+**Q：插件能被信任吗？它会不会拖慢终端？**
+`node:vm` 不是安全沙箱，插件与宿主同进程。真正会导致「终端变卡」的典型写法是在 `session:output`
+回调里做重活（正则全扫、遍历十万行）。这类回调每次远端输出都会跑，请只做 O(1) 级别的判断。
+插件抛错本身不会影响终端输出，只会记进规则统计与插件日志。
+
+**Q：Docker 里能 SSH 到宿主机的服务吗？**
+可以，但 `127.0.0.1` 在容器里指的是容器自己。要用宿主机的地址：Linux 上常用 `--add-host=host.docker.internal:host-gateway`，
+或者直接用宿主在网桥上的 IP。

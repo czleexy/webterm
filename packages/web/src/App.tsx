@@ -14,7 +14,12 @@ import { LogsPanel } from './logs/LogsPanel'
 import { BroadcastBar, BroadcastPanel } from './automation/BroadcastPanel'
 import { VaultGate } from './components/VaultGate'
 import { useHealth } from './hooks/useHealth'
-import { TERMINAL_TAB_TONE, useTerminalStore, newTab, newTabFromSession } from './store/useTerminalStore'
+import {
+  TERMINAL_TAB_TONE,
+  useTerminalStore,
+  newTab,
+  newTabFromSession,
+} from './store/useTerminalStore'
 import { SFTP_TAB_TONE, useSftpStore } from './store/useSftpStore'
 import { useTunnelStore } from './store/useTunnelStore'
 import { useVaultStore } from './store/useVaultStore'
@@ -22,17 +27,27 @@ import { useLibraryStore } from './store/useLibraryStore'
 import { useAutomationStore } from './store/useAutomationStore'
 import { useBroadcastStore } from './store/useBroadcastStore'
 import { TerminalPane } from './terminal/TerminalPane'
+import { getTerminalEndpoint } from './terminal/terminalBus'
 import { SftpWorkspace } from './sftp/SftpWorkspace'
-import { applyTheme, useThemeStore } from './theme/useTheme'
+import { SettingsPanel } from './settings/SettingsPanel'
+import { useGlobalShortcuts } from './settings/useGlobalShortcuts'
+import { useSettingsStore } from './settings/useSettingsStore'
+import { ToastHost } from './ui/ToastHost'
+import { toast } from './ui/toast'
+import { useT } from './i18n'
+import { useLayoutStore, LAYOUT_LABEL_KEY, type LayoutMode } from './layout/useLayoutStore'
+import { Divider, EmptySlot, dividerSpecs, gridTemplate, slotArea } from './layout/split'
+import { useThemeStore, watchSystemTheme } from './theme/useTheme'
 import { createLibraryNode } from './api/client'
 import { asSshConfig } from './utils/protocol'
+import { cn } from './utils/cn'
 
 /** 终端与 SFTP 共处一条标签栏，用前缀区分来源，避免 id 空间冲突 */
 const terminalKey = (id: string): string => `terminal:${id}`
 const sftpKey = (id: string): string => `sftp:${id}`
 
 export default function App() {
-  const mode = useThemeStore((state) => state.mode)
+  const t = useT()
   const health = useHealth()
 
   const tabs = useTerminalStore((state) => state.tabs)
@@ -68,10 +83,22 @@ export default function App() {
   const setBroadcastPanelOpen = useBroadcastStore((s) => s.setPanelOpen)
   const disableBroadcast = useBroadcastStore((s) => s.disable)
 
+  /* ---------------- 阶段 8：布局与设置 ---------------- */
+
+  const layoutMode = useLayoutStore((s) => s.mode)
+  const slots = useLayoutStore((s) => s.slots)
+  const focusIndex = useLayoutStore((s) => s.focusIndex)
+  const ratioX = useLayoutStore((s) => s.ratioX)
+  const ratioY = useLayoutStore((s) => s.ratioY)
+  const setSettingsOpen = useSettingsStore((s) => s.setPanelOpen)
+
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickMode, setQuickMode] = useState<ConnectMode>('terminal')
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
+  /** 窄屏下会话树折叠成抽屉（桌面端始终展开，这个状态无用） */
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [mobileNoticeClosed, setMobileNoticeClosed] = useState(false)
   const [editingSession, setEditingSession] = useState<LibraryNode | null>(null)
   const [sessionParentId, setSessionParentId] = useState<string | null>(null)
   const [folderPrompt, setFolderPrompt] = useState<{ parentId: string | null; name: string } | null>(null)
@@ -82,9 +109,15 @@ export default function App() {
     ? (activeSftpId ? sftpKey(activeSftpId) : null)
     : (activeTerminalId ? terminalKey(activeTerminalId) : null)
 
+  /**
+   * 主题应用。
+   * 三态里的 `auto` 依赖 `prefers-color-scheme`，系统在用户开着页面时切换是常事
+   * （macOS 的日落自动切换），所以订阅它并重新解析。
+   */
   useEffect(() => {
-    applyTheme(mode)
-  }, [mode])
+    useThemeStore.getState().apply()
+    return watchSystemTheme(() => useThemeStore.getState().apply())
+  }, [])
 
   // 首屏拉取保险库状态；未就绪期间 VaultGate 显示加载态
   useEffect(() => {
@@ -110,7 +143,48 @@ export default function App() {
     if (vaultUnlocked) void useTunnelStore.getState().refresh()
   }, [tabs.length, vaultUnlocked])
 
-  /** 统一的标签视图：终端在前、SFTP 在后 */
+  /* ---------------- 布局与标签的同步 ---------------- */
+
+  // 单格模式下 slots[0] 恒等于当前活动终端：布局是派生的，不该成为第二个真相
+  useEffect(() => {
+    const layout = useLayoutStore.getState()
+    if (layout.mode !== 'single') return
+    if (layout.slots[0] !== activeTerminalId) layout.setSlot(0, activeTerminalId)
+  }, [activeTerminalId, layoutMode])
+
+  // 标签集合变化：清掉已关闭标签的引用，并把空格子用闲置会话补齐
+  useEffect(() => {
+    const ids = tabs.map((tab) => tab.id)
+    const layout = useLayoutStore.getState()
+    layout.pruneSlots(ids)
+    if (layout.mode !== 'single') useLayoutStore.getState().fillEmptySlots(ids)
+  }, [tabs])
+
+  const applyLayout = useCallback(
+    (mode: LayoutMode) => {
+      const layout = useLayoutStore.getState()
+      if (layout.mode === mode) return
+      const ids = tabs.map((tab) => tab.id)
+      layout.setMode(mode, ids, activeTerminalId)
+      if (mode !== 'single') useLayoutStore.getState().fillEmptySlots(ids)
+      toast('info', t('toast.layoutChanged', { layout: t(LAYOUT_LABEL_KEY[mode]) }))
+    },
+    [tabs, activeTerminalId, t],
+  )
+
+  /** 在格子之间移动焦点（分屏时才有多格） */
+  const movePaneFocus = useCallback((delta: number) => {
+    const layout = useLayoutStore.getState()
+    if (layout.mode === 'single') return
+    const count = layout.slots.length
+    const next = (layout.focusIndex + delta + count) % count
+    layout.setFocus(next)
+    const tabId = layout.slots[next]
+    if (tabId) useTerminalStore.getState().setActive(tabId)
+  }, [])
+
+  /* ---------------- 标签视图 ---------------- */
+
   const tabItems = useMemo<WorkspaceTabItem[]>(() => {
     const terminalItems: WorkspaceTabItem[] = tabs.map((tab) => {
       const tone = TERMINAL_TAB_TONE[tab.status]
@@ -269,6 +343,11 @@ export default function App() {
   const handleSelect = useCallback(
     (unifiedId: string) => {
       if (unifiedId.startsWith('sftp:')) {
+        // SFTP 与分屏是两套布局语义，同时出现只会互相打架：切到 SFTP 时退回单格
+        const layout = useLayoutStore.getState()
+        if (layout.mode !== 'single') {
+          layout.setMode('single', tabs.map((tab) => tab.id), activeTerminalId)
+        }
         setActiveKind('sftp')
         setActiveSftp(unifiedId.slice('sftp:'.length))
         return
@@ -278,8 +357,26 @@ export default function App() {
       setActiveTerminal(terminalTabId)
       // 切过去看到的就是这个终端的现状，角标该清了
       useAutomationStore.getState().markHitsSeen(terminalTabId)
+
+      // 分屏时：该会话已在某个格子里就聚焦它，否则替换当前聚焦格的内容
+      const layout = useLayoutStore.getState()
+      if (layout.mode === 'single') return
+      const existing = layout.slots.indexOf(terminalTabId)
+      if (existing >= 0) layout.setFocus(existing)
+      else layout.setSlot(layout.focusIndex, terminalTabId)
     },
-    [setActiveSftp, setActiveTerminal],
+    [activeTerminalId, setActiveSftp, setActiveTerminal, tabs],
+  )
+
+  /** 在标签之间循环（快捷键用） */
+  const cycleTab = useCallback(
+    (delta: number) => {
+      if (tabItems.length < 2) return
+      const index = tabItems.findIndex((item) => item.id === activeKey)
+      const next = tabItems[(index + delta + tabItems.length) % tabItems.length]
+      if (next) handleSelect(next.id)
+    },
+    [activeKey, handleSelect, tabItems],
   )
 
   // 当前类型的标签全部关掉后，自动切到另一类，避免停在空白页
@@ -341,42 +438,37 @@ export default function App() {
     setQuickOpen(true)
   }, [])
 
-  /** 全局快捷键：用 Alt 组合键，避免与浏览器自身的 Ctrl+T / Ctrl+W 冲突 */
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!e.altKey || e.ctrlKey || e.metaKey) return
-      const key = e.key.toLowerCase()
+  /* ---------------- 全局快捷键 ---------------- */
 
-      if (key === 't') {
-        e.preventDefault()
-        openQuick('terminal')
-        return
-      }
-      if (key === 'w') {
-        e.preventDefault()
-        if (activeKey) handleClose(activeKey)
-        return
-      }
-      if (key === 'arrowdown' || key === 'arrowup') {
-        if (tabItems.length < 2) return
-        e.preventDefault()
-        const index = tabItems.findIndex((t) => t.id === activeKey)
-        const delta = key === 'arrowdown' ? 1 : -1
-        const next = tabItems[(index + delta + tabItems.length) % tabItems.length]
-        if (next) handleSelect(next.id)
-        return
-      }
-      if (key === 'b') {
-        // Alt+B 一键掐断广播。这是唯一一个「越快越好」的操作：
-        // 广播开着的时候，用户意识到不对劲到下一次按回车之间只有一两秒。
-        e.preventDefault()
-        if (useBroadcastStore.getState().enabled) disableBroadcast()
-        else setBroadcastPanelOpen(true)
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeKey, disableBroadcast, handleClose, handleSelect, openQuick, setBroadcastPanelOpen, tabItems])
+  useGlobalShortcuts({
+    'new-connection': () => openQuick('terminal'),
+    'close-tab': () => {
+      if (activeKey) handleClose(activeKey)
+    },
+    'next-tab': () => cycleTab(1),
+    'prev-tab': () => cycleTab(-1),
+    'terminal-search': () => {
+      if (activeTerminalId) getTerminalEndpoint(activeTerminalId)?.openSearch?.()
+    },
+    'copy-selection': () => {
+      if (activeTerminalId) getTerminalEndpoint(activeTerminalId)?.copySelection?.()
+    },
+    'broadcast-toggle': () => {
+      // 这是唯一一个「越快越好」的操作：广播开着的时候，
+      // 用户意识到不对劲到下一次按回车之间只有一两秒
+      if (useBroadcastStore.getState().enabled) disableBroadcast()
+      else setBroadcastPanelOpen(true)
+    },
+    'layout-single': () => applyLayout('single'),
+    'layout-split-2': () => applyLayout('split-2'),
+    'layout-grid-4': () => applyLayout('grid-4'),
+    'focus-next-pane': () => movePaneFocus(1),
+    'focus-prev-pane': () => movePaneFocus(-1),
+    'open-settings': () => setSettingsOpen(true),
+    'open-logs': () => setLogsOpen(true),
+    'open-automation': () => openAutomation(),
+    'open-tunnels': () => openTunnels(),
+  })
 
   // 保险库未就绪 / 未解锁时，整个应用被门禁挡住
   if (!vaultUnlocked) {
@@ -386,9 +478,31 @@ export default function App() {
         <div className="h-[calc(100%-2.25rem)]">
           <VaultGate>{null}</VaultGate>
         </div>
+        <ToastHost />
+        <SettingsPanel />
       </div>
     )
   }
+
+  /* ---------------- 分屏渲染参数 ---------------- */
+
+  const template = gridTemplate(layoutMode, ratioX, ratioY)
+  const slotOf = new Map<string, number>()
+  slots.forEach((id, index) => {
+    if (id) slotOf.set(id, index)
+  })
+
+  const terminalVisible = (tabId: string): boolean => {
+    if (activeKind !== 'terminal') return false
+    if (layoutMode === 'single') return tabId === activeTerminalId
+    return slotOf.has(tabId)
+  }
+
+  const emptySlots = layoutMode === 'single'
+    ? []
+    : slots.map((id, index) => ({ id, index })).filter((entry) => entry.id === null)
+
+  const paneOptions = tabs.map((tab) => ({ id: tab.id, title: tab.title }))
 
   return (
     <div className="flex h-full flex-col bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
@@ -402,18 +516,55 @@ export default function App() {
         onOpenBroadcast={() => setBroadcastPanelOpen(true)}
         broadcastOn={broadcastEnabled}
         onOpenLogs={() => setLogsOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        layoutMode={layoutMode}
+        onLayoutChange={applyLayout}
+        onToggleSidebar={() => setSidebarOpen((v) => !v)}
       />
 
       {/* 同步输入开着时，工作区顶部常驻警示条 —— 不能只靠一个小指示灯 */}
       <BroadcastBar />
 
+      {/* 窄屏下终端体验确实受限，直说比让用户困惑好 */}
+      {mobileNoticeClosed ? null : (
+        <div
+          data-testid="mobile-notice"
+          className="flex shrink-0 items-center gap-2 border-b border-neutral-200 bg-neutral-100 px-3 py-1 text-[11px] text-neutral-600 md:hidden dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300"
+        >
+          <span className="min-w-0 flex-1">{t('app.mobileNotice')}</span>
+          <button
+            type="button"
+            onClick={() => setMobileNoticeClosed(true)}
+            className="rounded px-1 text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-800"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1">
+        {/* 小于 768px 时变成抽屉；遮罩点击关闭 */}
+        {sidebarOpen ? (
+          <div
+            data-testid="sidebar-mask"
+            className="fixed inset-0 z-40 bg-black/40 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+            aria-hidden="true"
+          />
+        ) : null}
         <SessionSidebar
+          className={cn(
+            'fixed inset-y-0 left-0 z-50 transition-transform md:static md:z-auto',
+            sidebarOpen ? 'translate-x-0 shadow-2xl md:shadow-none' : '-translate-x-full md:translate-x-0',
+          )}
           connections={connections}
           activeKey={activeKey}
           nodes={nodes}
           vaultUnlocked={vaultUnlocked}
-          onSelect={handleSelect}
+          onSelect={(key) => {
+            handleSelect(key)
+            setSidebarOpen(false)
+          }}
           onClose={handleClose}
           onNew={() => openQuick('terminal')}
           onConnectSession={handleConnectSession}
@@ -443,24 +594,99 @@ export default function App() {
                 <WelcomePane health={health} onNew={() => openQuick('terminal')} />
               </div>
             ) : (
-              // 所有面板同时挂载，非活动的用 CSS 隐藏：
-              // 这样切换标签不会丢失滚动缓冲，也不会重建 WebSocket 连接
-              <>
-                {tabs.map((tab) => (
-                  <TerminalPane
-                    key={tab.id}
-                    tab={tab}
-                    active={activeKind === 'terminal' && tab.id === activeTerminalId}
-                  />
-                ))}
+              /**
+               * 所有面板同时挂载、且**恒为同一个网格容器的直接子元素**：
+               * 这样切标签、切布局都只改变 grid-area 与显示状态，不会卸载重建，
+               * 滚动缓冲与 WebSocket 连接都得以保留（详见 layout/useLayoutStore.ts 的说明）。
+               */
+              <div
+                data-testid="terminal-grid"
+                data-layout={layoutMode}
+                className={cn(
+                  'relative h-full min-h-0',
+                  // 分屏时网格底色与分隔条同色：四段分隔条在正中留空的交叉点
+                  // 由这层底色补上，十字看起来才是连通的
+                  layoutMode === 'single' ? '' : 'bg-neutral-200 dark:bg-neutral-800',
+                )}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: template.gridTemplateColumns,
+                  gridTemplateRows: template.gridTemplateRows,
+                }}
+              >
+                {tabs.map((tab) => {
+                  const slotIndex = slotOf.get(tab.id)
+                  return (
+                    <TerminalPane
+                      key={tab.id}
+                      tab={tab}
+                      visible={terminalVisible(tab.id)}
+                      active={activeKind === 'terminal' && tab.id === activeTerminalId}
+                      gridArea={layoutMode === 'single' ? undefined : slotArea(layoutMode, slotIndex ?? 0)}
+                      pane={
+                        layoutMode === 'single' || slotIndex === undefined
+                          ? undefined
+                          : {
+                              index: slotIndex,
+                              focused: slotIndex === focusIndex,
+                              options: paneOptions,
+                              onFocus: () => {
+                                useLayoutStore.getState().setFocus(slotIndex)
+                                setActiveTerminal(tab.id)
+                              },
+                              onClear: () => useLayoutStore.getState().setSlot(slotIndex, null),
+                              onPick: (tabId: string) => {
+                                useLayoutStore.getState().setSlot(slotIndex, tabId)
+                                useLayoutStore.getState().setFocus(slotIndex)
+                                setActiveTerminal(tabId)
+                              },
+                            }
+                      }
+                    />
+                  )
+                })}
+
                 {sftpTabs.map((tab) => (
-                  <SftpWorkspace
+                  <div
                     key={tab.id}
-                    tab={tab}
-                    active={activeKind === 'sftp' && tab.id === activeSftpId}
+                    style={{ gridArea: '1 / 1 / 2 / 2' }}
+                    className={cn(
+                      'min-h-0',
+                      activeKind === 'sftp' && tab.id === activeSftpId ? 'flex' : 'hidden',
+                    )}
+                  >
+                    <SftpWorkspace
+                      tab={tab}
+                      active={activeKind === 'sftp' && tab.id === activeSftpId}
+                    />
+                  </div>
+                ))}
+
+                {dividerSpecs(layoutMode).map((spec) => (
+                  <Divider
+                    key={spec.id}
+                    axis={spec.axis}
+                    area={spec.area}
+                    ratio={spec.axis === 'x' ? ratioX : ratioY}
+                    onRatio={(value) => useLayoutStore.getState().setRatio(spec.axis, value)}
                   />
                 ))}
-              </>
+
+                {emptySlots.map((entry) => (
+                  <EmptySlot
+                    key={`empty-${entry.index}`}
+                    area={slotArea(layoutMode, entry.index)}
+                    focused={entry.index === focusIndex}
+                    options={paneOptions}
+                    onFocus={() => useLayoutStore.getState().setFocus(entry.index)}
+                    onPick={(tabId) => {
+                      useLayoutStore.getState().setSlot(entry.index, tabId)
+                      useLayoutStore.getState().setFocus(entry.index)
+                      useTerminalStore.getState().setActive(tabId)
+                    }}
+                  />
+                ))}
+              </div>
             )}
           </div>
         </main>
@@ -487,6 +713,8 @@ export default function App() {
       <AutomationPanel />
       <LogsPanel open={logsOpen} onClose={() => setLogsOpen(false)} />
       <BroadcastPanel />
+      <SettingsPanel />
+      <ToastHost />
     </div>
   )
 }

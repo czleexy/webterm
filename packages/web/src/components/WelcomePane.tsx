@@ -3,6 +3,8 @@ import { API_PREFIX, PROTOCOL_LABEL, WS_PATH } from '@webterm/shared'
 import type { CapabilitiesResponse } from '@webterm/shared'
 import { fetchCapabilities } from '../api/client'
 import type { UseHealthResult } from '../hooks/useHealth'
+import { useT, type MessageKey } from '../i18n'
+import { SkeletonBlock } from '../ui/Skeleton'
 import { cn } from '../utils/cn'
 
 type PhaseStatus = 'done' | 'current' | 'planned'
@@ -23,22 +25,27 @@ const PHASES: PhaseItem[] = [
   { id: 5, name: '端口转发与隧道', scope: '-L / -R / -D SOCKS5 / 随会话自动启动', status: 'done' },
   { id: 6, name: '自动化与批量运维', scope: '触发器 / 宏按钮栏 / 沙箱脚本 / 批量执行 / 同步输入', status: 'done' },
   { id: 7, name: '日志与审计', scope: '三种日志格式 / 归档轮转 / 分页预览 / 审计表 / 脱敏规则', status: 'done' },
-  { id: 8, name: '体验打磨', scope: '主题与字体 / 快捷键 / 终端搜索 / 分屏', status: 'planned' },
+  {
+    id: 8,
+    name: '体验打磨',
+    scope: '主题与字体 / 快捷键 / 终端搜索 / 关键词高亮 / 分屏 / 通知 / i18n',
+    status: 'done',
+  },
   { id: 9, name: '插件与打包', scope: '插件宿主 / 打包发布（npm · Docker）', status: 'planned' },
 ]
 
-const STATUS_BADGE: Record<PhaseStatus, { text: string; className: string }> = {
+const STATUS_BADGE: Record<PhaseStatus, { textKey: MessageKey; className: string }> = {
   done: {
-    text: '已完成',
+    textKey: 'welcome.phase.done',
     className:
       'border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-400',
   },
   current: {
-    text: '进行中',
+    textKey: 'welcome.phase.active',
     className: 'border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-400',
   },
   planned: {
-    text: '待开发',
+    textKey: 'welcome.phase.planned',
     className:
       'border-neutral-200 text-neutral-400 dark:border-neutral-700 dark:text-neutral-500',
   },
@@ -70,6 +77,7 @@ interface WelcomePaneProps {
 }
 
 export function WelcomePane({ health, onNew }: WelcomePaneProps) {
+  const t = useT()
   const { status, data, error } = health
   const [caps, setCaps] = useState<CapabilitiesResponse | null>(null)
 
@@ -92,15 +100,15 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="text-base font-medium text-neutral-900 dark:text-neutral-100">
-        浏览器里的 SSH / Telnet 工作台
+        {t('welcome.headline')}
       </h1>
       <p className="mt-1.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
-        后端跑在本机，负责建立连接与协议处理；浏览器只做渲染与交互。
-        <b className="font-medium text-neutral-700 dark:text-neutral-300">已完成阶段 0 ~ 7</b>
-        ：多标签终端、会话库与主密码保险库、SFTP 双栏文件传输、SSH / Telnet 双协议支持、
-        端口转发（-L / -R / -D SOCKS5）、自动化与批量运维（触发器、按钮栏、沙箱脚本、同步输入、批量执行），
-        以及日志与审计（三种日志格式、按天归档与轮转、可配脱敏、八类操作的审计流水）。
-        下一步是阶段 8：体验打磨（主题与字体、快捷键、终端搜索、分屏）。
+        {t('welcome.intro.lead')}
+        <b className="font-medium text-neutral-700 dark:text-neutral-300">
+          {t('welcome.intro.done')}
+        </b>
+        {t('welcome.intro.body')}
+        {t('welcome.intro.next')}
       </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -110,20 +118,19 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
           onClick={onNew}
           className="rounded-md bg-neutral-900 px-3.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white"
         >
-          新建连接
+          {t('welcome.newConnection')}
         </button>
         <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
-          支持 SSH 与 Telnet（端口 23）· 快捷键：Alt+T 新建 · Alt+W 关闭 · Alt+↑/↓ 切换标签 ·
-          Alt+B 开启/立即停止同步输入
+          {t('welcome.shortcuts')}
         </span>
       </div>
 
       {status === 'offline' ? (
         <div className="mt-5 rounded-lg border border-red-300 bg-red-50 px-3 py-2.5 text-xs leading-relaxed text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
-          <b className="font-medium">无法连接后端服务</b>
+          <b className="font-medium">{t('welcome.offline.title')}</b>
           <div className="mt-1 break-all font-mono">{error}</div>
           <div className="mt-1 text-red-600/80 dark:text-red-400/80">
-            请确认后端已启动（npm run dev），或访问的服务地址与后端端口一致。
+            {t('welcome.offline.hint')}
           </div>
         </div>
       ) : null}
@@ -192,8 +199,11 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
           </div>
         ))}
         {!caps ? (
-          <div className="rounded-lg border border-dashed border-neutral-200 px-3 py-2 text-[11px] text-neutral-400 dark:border-neutral-800 dark:text-neutral-500">
-            正在读取服务端能力…
+          <div className="rounded-lg border border-dashed border-neutral-200 px-3 py-2 dark:border-neutral-800">
+            <p className="mb-2 text-[11px] text-neutral-400 dark:text-neutral-500">
+              {t('welcome.capsLoading')}
+            </p>
+            <SkeletonBlock lines={2} delayMs={0} label={t('welcome.capsLoading')} />
           </div>
         ) : null}
       </div>
@@ -209,7 +219,7 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
       ) : null}
 
       <h2 className="mt-8 text-sm font-medium text-neutral-900 dark:text-neutral-100">
-        实施进度
+        {t('welcome.progress')}
       </h2>
       <ul className="mt-2 divide-y divide-neutral-200 overflow-hidden rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
         {PHASES.map((phase) => {
@@ -238,7 +248,7 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
                   badge.className,
                 )}
               >
-                {badge.text}
+                {t(badge.textKey)}
               </span>
             </li>
           )

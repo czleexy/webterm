@@ -27,6 +27,15 @@ export interface TerminalEndpoint {
   sendControl: (msg: ClientControlMessage) => void
   /** 当前是否可写（连接处于 OPEN 状态） */
   isWritable: () => boolean
+  /**
+   * 面板级动作（阶段 8）。
+   * 全局快捷键只能拿到「当前活动的 tabId」，真正要操作的是那个面板内部的
+   * xterm 实例与局部 UI 状态（搜索条开关、选区、焦点），
+   * 因此由面板把这些能力登记出来，而不是把 xterm 实例暴露到全局。
+   */
+  openSearch?: () => void
+  focus?: () => void
+  copySelection?: () => void
 }
 
 const endpoints = new Map<string, TerminalEndpoint>()

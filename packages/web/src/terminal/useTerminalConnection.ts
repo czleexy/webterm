@@ -69,6 +69,16 @@ export function useTerminalConnection({
   const attemptRef = useRef(0)
   const disposedRef = useRef(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * 终端是否已经确认结束（收到 exit）。
+   *
+   * 为什么需要它：`exit` 之后服务端立刻回收终端，但客户端还有在途的控制消息
+   * （xterm 写入回调里的 ack、resize、日志分片…）。服务端对落在已回收终端上的
+   * 消息会回一条**致命**错误「终端不存在或已关闭」，照单全收的话标签会从
+   * 「已结束」翻成「出错」，并且再弹一条与上一条自相矛盾的提示条。
+   * 一旦确认结束，后续错误与断开都不该再改写状态。
+   */
+  const endedRef = useRef(false)
 
   // 回调存进 ref，避免把它们写进 effect 依赖导致连接被反复重建
   const getTermRef = useRef(getTerm)
@@ -148,10 +158,13 @@ export function useTerminalConnection({
 
         case 'exit':
           term?.write(`\r\n\x1b[90m[${msg.reason}]\x1b[0m\r\n`)
+          endedRef.current = true
           setStatusRef.current({ status: 'exited', notice: msg.reason })
           break
 
         case 'error':
+          // 已结束的终端不再接受改写（见 endedRef 的说明）
+          if (endedRef.current) break
           writeNotice(msg.message, 'error')
           setBannerRef.current(msg.message)
           setStatusRef.current({
@@ -222,6 +235,9 @@ export function useTerminalConnection({
         if (disposedRef.current) return
         wsRef.current = null
 
+        // 已经正常结束的终端不必重连，也不必把「已结束」翻成「出错」
+        if (endedRef.current) return
+
         // 确定性失败：重试也不会成功，直接给出结论
         if (event.code === CLOSE_UNAUTHORIZED || event.code === CLOSE_NOT_FOUND) {
           const message = '终端已在服务端关闭，无法重新附加，请重新发起连接。'
@@ -259,6 +275,7 @@ export function useTerminalConnection({
   /* ---------------- 首次建立：创建服务端终端后再附加 ---------------- */
   useEffect(() => {
     disposedRef.current = false
+    endedRef.current = false
 
     const bootstrap = async () => {
       try {
@@ -334,6 +351,7 @@ export function useTerminalConnection({
     }
     if (timerRef.current) clearTimeout(timerRef.current)
     attemptRef.current = 0
+    endedRef.current = false
     setBannerRef.current(null)
     setStatusRef.current({ status: 'connecting' })
     openSocket(conn)

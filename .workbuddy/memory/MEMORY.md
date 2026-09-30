@@ -31,10 +31,11 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 
 ## 状态与进度（2026-09-30）
 
-- 已完成：阶段 0（骨架）、1（终端主干）、2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）、3（SFTP）、4（Telnet，插入交付）、5（端口转发与隧道）、6（自动化与批量运维）、**7（日志与审计）**
+- 已完成：阶段 0（骨架）、1（终端主干）、2（会话库 + 主密码保险库 + 密钥登录 + 跳板机）、3（SFTP）、4（Telnet，插入交付）、5（端口转发与隧道）、6（自动化与批量运维）、7（日志与审计）、**8（体验打磨）**
 - 各阶段 E2E 计数见 README「端到端验证」表与 `docs/03-测试指南.md`
-- **阶段 7：服务端 69/69**（`data/tmp/e2e-logging.mjs`）／**浏览器 80/80**（`data/tmp/e2e-browser-logging.mjs`）
-- 下一步：**阶段 8 体验打磨**（主题与字体 / 快捷键 / 终端搜索 / 关键词高亮 / 分屏 / 桌面通知 / i18n），之后阶段 9 插件与打包
+- **阶段 8：浏览器 168/168**（`data/tmp/e2e-browser-phase8.mjs`）；阶段 7 浏览器套件回归 81/81；typecheck + build 全绿
+- 阶段 8 三个提交：`6993fc6` 代码 → `a07d52a` E2E 与截图 → `763892d` 文档
+- 下一步：**阶段 9 插件机制与打包发布**（`data/plugins/*/plugin.json` + node:vm Host API、示例插件 heartbeat-monitor、npm 全局包 / Docker / 便携目录）
 
 ## 日志与审计实现要点（阶段 7）
 
@@ -53,6 +54,31 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 - ⚠️ **给 React 受控 select 填值前必须等 option 出现**：对不存在的 option 赋值会被浏览器静默置空
 - ⚠️ **`typeLine` 只作用于 `[data-active="true"]` 的终端**：多标签要先点 `[role="tab"]` 切回目标终端
 - ⚠️ **拍回放截图要用 `replayPage.screenshot()`**，`page.screenshot()` 拍的是主应用界面
+
+## 体验打磨实现要点（阶段 8）
+
+- **分屏不用 react-resizable-panels**（装了又卸，零新增依赖）：它的 `PanelGroup > Panel > 内容` 层级切布局时换终端父节点 → React 卸载重建 → WS 重连 → **服务端再建一条 SSH 连接**（老设备 VTY 少，不可接受）。改 CSS Grid 自绘：所有终端恒为同一网格容器的直接子元素，切布局只改 `grid-area` 与显示状态；分隔条原生鼠标事件自绘
+- 十字分隔条**拆四段**（竖条贯穿整列 + 横条贯穿整行会在正中重叠，横条压在上面 → 拖竖条变成改行高）；交叉点由网格底色补齐
+- `registerDecoration` / `registerMarker` / `registerCharacterJoiner` 必须 `allowProposedApi: true`，否则**静默 0 结果**（异常被搜索的 catch 吞掉，极难排查）
+- 高亮要**单独扫光标所在行**：不换行的回显正写在这一行上，当它「已定型」跳过就永远扫不到；只增量扫 `onWriteParsed` 新增行、上限 2000 装饰、跳过备用缓冲
+- 搜索计数被 `highlightLimit`(2000) 截断 → 界面显示 `2000+`；搜索条**悬浮**（占一行会改终端高度 → 触发 fit → 缓冲重排）
+- 快捷键用 `event.code`（物理键位）+ **捕获阶段**监听（冒泡时远端已收到按键）；`Ctrl+T/W/Tab`、`Ctrl+1~9`、`F5/F11/F12`、`Alt+←→` 网页拦不住，默认绑定避开并给出原因文案
+- 桌面通知三重门槛：设置开关 + 权限 granted + **页面不在前台**；权限只在设置页显式申请
+- 偏好全在 localStorage：`webterm.settings` / `webterm.theme`；`useLayoutStore` **刻意不持久化**（引用的是活不过刷新的标签）
+- i18n：`en-US` 声明为 `Record<MessageKey,string>`，漏翻译 typecheck 即报错；缺键返回键名
+
+### 阶段 8 的两条「缓冲」认知（重要）
+
+1. ⚠️ **分屏会让滚动缓冲顶部被裁掉**：pane 变窄 → xterm 对滚动缓冲**重排（reflow）**，超宽长行重新折行、行数几乎翻倍，越过 scrollback 上限就丢最老的行。**不是终端被重建**（要用 `.xterm` 内部节点身份判断，别只看 React 渲染的 pane 容器）。**别拿缓冲区顶部内容当「缓冲还在不在」的探针** —— 会得到一个像「终端被重建了」的假失败
+2. ⚠️ **折行缓冲下搜索的滚动落点会偏**（已知限制，未修）：`resultIndex/count` 正确（确实找到了），但视口落在命中行**下方约半屏**。未折行缓冲里定位精确（10 万行外 254~472 ms 一次到位）
+
+### 阶段 8 E2E 断言写法教训
+
+- 搜索单结果会让「上下跳转」断言退化：要用**大量重复**的关键字（`big` 输出里的 `vwxyz01234`）
+- 正则搜索不能拿模式串当「已滚到」判据（`includes('PHASE8-ANCHOR-[A-Z]+')` 恒假）→ needle 与 expectText 分开
+- 「视口出现命中」与「计数回流 React」不是同一拍，命中后再收敛 1.5 s 读计数
+- **Chrome 不会为单次 `click({clickCount:2})` 合成 dblclick**：双击必须发两次完整 down/up；首版双击复位断言因此假通过
+- 通知权限用 CDP `Browser.setPermission` 精确控制（无头默认 denied）
 
 ## Telnet 实现要点（阶段 4）
 

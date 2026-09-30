@@ -4,9 +4,9 @@
 
 服务跑在本机负责协议栈与连接管理，浏览器只负责渲染与交互。免安装、跨平台，配置与会话集中在一处管理。
 
-> 当前进度：**阶段 6（自动化与批量运维）已交付** —— 触发器（自动应答 / 高亮 / 通知 / 标签 / 执行脚本）、按钮栏多步宏、沙箱脚本（CodeMirror 编辑器 + 内置 API 补全）、同步输入广播模式、批量执行（并发 + 结果表 + 导出 CSV）。
-> 前一阶段：阶段 5（端口转发与隧道）—— 本地转发 `-L`、远程转发 `-R`、动态转发 `-D`（SOCKS5 代理）、随会话自动启动、会话关闭即释放端口。
-> 更早：阶段 4（Telnet 明文终端）—— 端口 23、选项协商（TERMINAL-TYPE / NAWS）、本地回显兜底、IAC 转义，与 SSH 共用同一套终端与标签体系。
+> 当前进度：**阶段 7（日志与审计）已交付** —— 三种会话日志格式（纯文本 / 带时间戳 / HTML 彩色快照）、按天归档与 20 MB 轮转、保留天数定时清理、可配正则脱敏、日志管理页（筛选 / 分页预览 / 下载 / 删除）、审计流水（连接 / 断开 / 上传 / 下载 / 宏 / 脚本，含客户端 IP）。
+> 前一阶段：阶段 6（自动化与批量运维）—— 触发器（自动应答 / 高亮 / 通知 / 标签 / 执行脚本）、按钮栏多步宏、沙箱脚本（CodeMirror 编辑器 + 内置 API 补全）、同步输入广播模式、批量执行（并发 + 结果表 + 导出 CSV）。
+> 更早：阶段 5（端口转发与隧道）—— 本地转发 `-L`、远程转发 `-R`、动态转发 `-D`（SOCKS5 代理）、随会话自动启动、会话关闭即释放端口。
 > 详细设计见 [`docs/01-功能框架与需求说明书.md`](docs/01-功能框架与需求说明书.md) 与 [`docs/02-实现计划.md`](docs/02-实现计划.md)；
 > 测试方法见 [`docs/03-测试指南.md`](docs/03-测试指南.md)；界面截图见 [`docs/screenshots/`](docs/screenshots/)。
 
@@ -185,6 +185,65 @@ npm run dev
 
 ---
 
+## 阶段 7 已交付能力（日志与审计）
+
+会话日志与会话配置放在一起（编辑会话时的「会话日志」组），落盘在服务端 `data/logs/`，随时可在顶栏「日志」入口里按会话 / 日期筛选、预览、下载、删除。
+
+### 会话日志三种格式
+
+| 格式 | 生成方 | 落地文件 | 适用 |
+| --- | --- | --- | --- |
+| 纯文本 | 服务端流式追加 | `{YYYY-MM-DD}.log` | 事后 `grep`、喂给别的工具；**可脱敏** |
+| 带时间戳 | 服务端流式追加 | `{YYYY-MM-DD}.log` | 需要知道「这行是什么时候来的」；**可脱敏** |
+| HTML（保留色彩） | **浏览器**用 `SerializeAddon.serializeAsHTML()` 定期序列化整份缓冲后上传 | `{YYYY-MM-DD}.html` | 双击即回放彩色终端；**不做脱敏**（见下） |
+
+```text
+data/logs/
+  PlainLog-83e79e/          ← {清洗后的会话名}-{sha256(sessionId) 前 6 位}
+    2026-09-30.log
+    2026-09-30.part1.log    ← 单文件超 20 MB 自动切分
+  HtmlLog-bd1653/
+    2026-09-30.html
+```
+
+### 关键设计取舍
+
+| 方面 | 说明 |
+| --- | --- |
+| 目录名带短哈希 | 只按会话名建目录的话，两台不同主机上的同名会话会**互相覆盖**。加上 `sessionId` 的短哈希既保人读性又不冲突；会话改名时目录不漂移（映射单独持久化） |
+| HTML 快照用 `.html` 扩展名 | 浏览器只对 `.html` 做「打开即渲染」，`.log` 会被当纯文本下载。验收要求「HTML 日志在浏览器打开颜色正确」依赖这一点 |
+| HTML 快照不做脱敏 | 它是**字节级忠实的终端回放**，在 HTML 标记里做文本替换会破坏结构、把颜色改坏。要脱敏就用纯文本 / 带时间戳格式 —— 这条边界在设置页也写明了 |
+| 脱敏按行对齐 | 逐 chunk 脱敏会被传输分片切断正则（`password=sec` + `ret123` 两半都不匹配），**敏感内容原样落盘**。所以先按行缓冲、整行到齐再替换 |
+| 写入批量合并 | 一行一次 `appendFile` 在 21 MB 输出下要近 30 万次系统调用。合并成 256 KB 或 200 ms 定时刷盘 |
+| 预览不读全文 | 首次访问时按**字节**扫一遍 `0x0A` 建行偏移索引，之后任意窗口 O(1) `seek + read`。索引按 `size + mtime` 失效，LRU 缓存 8 个文件 |
+| 审计 detail 存整句 | 库里存的是「07:12 test 用户从 127.0.0.1 上传了 a.zip」这样的人读句子，而不是留给前端拼的结构化字段 —— 审计的价值在事后能看懂 |
+| Telnet 同样可记日志 | 日志挂在「会话输出流」这一层，与协议无关；Telnet 会话自动获得同样能力 |
+
+### 脱敏规则
+
+设置页可维护多条正则（默认带一条 `password\s*=\s*\S+` → `password=***`）。规则在**写入前**作用于纯文本 / 带时间戳格式：
+
+| 项 | 说明 |
+| --- | --- |
+| 上限 | 最多 32 条，可逐条启用 / 停用 |
+| 语法校验 | 编辑时就地校验，非法正则（如 `([unclosed`）当场标红，不会等到保存才报错 |
+| 保留天数 | 1 ~ 3650 天，默认 30；**改完立即生效**（不等下一个整点），过期目录连同文件一并清理 |
+
+### 审计事件
+
+八类事件写入 SQLite `audit_log`（纯追加表 + `(at)` / `(event, at)` 索引），全部记录客户端 IP：
+
+| 事件 | 中文句式样例 |
+| --- | --- |
+| `connect` / `disconnect` | 用户从 127.0.0.1 建立了到 demo@127.0.0.1 的连接（SSH） |
+| `upload` / `download` | 用户从 127.0.0.1 上传了 a.zip（2.4 MB） |
+| `macro_run` | 用户从 127.0.0.1 执行了宏「审计宏」 |
+| `script_run` | 用户从 127.0.0.1 运行了脚本「内联脚本」 |
+| `log_delete` | 用户从 127.0.0.1 删除了 1 个日志文件 |
+| `settings_change` | 用户从 127.0.0.1 更新了日志与审计设置（保留 30 天，脱敏规则 2 条） |
+
+---
+
 ## 可用脚本
 
 在**根目录**执行：
@@ -226,23 +285,28 @@ webterm/
 │  │     ├─ telnet/          协商状态机 / 传输层 / 错误分类（明文终端协议栈）
 │  │     ├─ sftp/            SFTP 会话 / 传输队列 / 本地路径沙箱
 │  │     ├─ tunnel/          端口转发：本地 / 远程 / SOCKS5 动态 + 隧道管理器 + 错误分类
+│  │     ├─ automation/      触发器引擎 / 宏 / 沙箱脚本（vm 隔离 + worker 可终止）
+│  │     ├─ logging/         会话日志写入器（三格式 / 轮转 / 脱敏） + 行偏移索引 + 日志服务
 │  │     ├─ terminal/        终端会话（双传输：SSH / Telnet） / 会话注册表 / 编码桥
 │  │     └─ api/
-│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals / vault / credentials / library / sftp / tunnels）
+│  │        ├─ rest/         REST 路由（health / capabilities / sessions / terminals / vault / credentials / library / sftp / tunnels / automation / logs / audit）
 │  │        ├─ resolver.ts   会话记录 → 明文连接参数
 │  │        └─ ws/           终端与 SFTP WebSocket 端点
 │  └─ web/                   React 前端
 │     └─ src/
 │        ├─ api/             REST 请求封装
 │        ├─ components/      UI 组件（门禁 / 弹窗 / 标签栏 / 会话库侧栏 / 隧道面板）
-│        ├─ terminal/        xterm 封装 / 连接 Hook / 配色
+│        ├─ terminal/        xterm 封装 / 连接 Hook / 配色 / HTML 快照序列化
 │        ├─ sftp/            SFTP 双栏工作区 / 文件列表 / 传输抽屉
+│        ├─ automation/      自动化面板 / 宏按钮栏 / CodeMirror 脚本编辑器 / 广播与批量执行
+│        ├─ logs/            日志与审计面板（会话日志 / 审计 / 设置三标签）
 │        ├─ store/           标签页 / 保险库 / 会话库 / SFTP / 隧道状态（Zustand）
 │        ├─ theme/           主题状态（Zustand persist）
 │        └─ utils/
 └─ data/                     运行时数据（已被 git 忽略）
-   ├─ webterm.db              SQLite（会话库 + 加密凭据）
-   └─ known_hosts.json        主机密钥指纹记录（TOFU）
+   ├─ webterm.db              SQLite（会话库 + 加密凭据 + 审计流水）
+   ├─ known_hosts.json        主机密钥指纹记录（TOFU）
+   └─ logs/                   会话日志（按「会话名-短哈希」归档，按天分文件）
 ```
 
 ---
@@ -357,6 +421,24 @@ webterm/
 终端的 WebSocket 新增三类服务端推送：`trigger`（命中，含需要渲染端配合的动作与已在服务端完成的动作摘要）、`script`（`start` / `log` / `done` / `error` / `timeout`）、`macro`（`start` / `step` / `done` / `error`）。
 
 `GET /api/capabilities` 的 `automation` 字段给出全部上限与白名单（匹配模式、可用修饰符、各类数量上限、沙箱可用全局列表），前端据此渲染表单与补全。
+
+### 日志与审计（阶段 7）
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET/PUT /api/logs/settings` | 读取 / 更新全局设置（`retentionDays` 1~3650、`redactionRules` 最多 32 条）。**改完立即生效**：收紧保留期会当场清一轮过期目录 |
+| `GET /api/logs/files?sessionId=&date=` | 日志文件列表，可按会话与日期筛选。每项含 `id`（相对路径）、`dir`/`sessionDir`、`sessionName`、`date`、`format`（文件头嗅探）、`sizeBytes`、`mtime` |
+| `GET /api/logs/files/:id/preview?start=&count=` | 按行读取窗口（`start` 缺省 0，`count` 上限 500 行 / 单行 10000 字符）。**不读全文**：行偏移索引 + `seek`，第 10 万行也是毫秒级；返回 `{ lines, start, total?, truncated }` |
+| `GET /api/logs/files/:id/download` | 附件流下载，`Content-Disposition` 用 UTF-8 `filename*` 传中文文件名 |
+| `DELETE /api/logs/files/:id` | 删除单个文件，记 `log_delete` 审计 |
+| `DELETE /api/logs/sessions/:dir` | 整目录删除（「清空某会话的日志」） |
+| `GET /api/audit?event=&from=&to=&page=&pageSize=` | 审计流水查询。`event` 非法直接 **400**；`from`/`to` 接受 ISO 8601 或 `YYYY-MM-DD`；返回 `{ entries, total, page, pageSize }` |
+
+路径安全：`id` 与 `dir` 都做越界校验，`../` 之类的穿越请求返回 **400**，不存在的文件返回 **404**。
+
+日志格式与设置随会话走：`POST /api/terminals` 的响应在会话启用了日志时带 `logging: { enabled, format }`，`GET /api/capabilities` 的 `logging` 字段给出格式清单、保留天数范围、规则与体积上限。
+
+WebSocket 新增一类客户端控制消息 `log-html`（`{ t:'log-html', seq, final, data }`）：浏览器把 `serializeAsHTML()` 的结果按 60k 字符分片上传，服务端按 `seq` 严格递增装配，`final` 时写临时文件再 `rename` 原子替换当天快照。`seq` 不连续的整份快照直接丢弃（宁可少一份快照，也不要写出半截的坏文件）。
 
 ### 保险库 / 凭据 / 会话库（阶段 2）
 
@@ -496,9 +578,10 @@ node packages/server/dev/mock-telnet-server.mjs
 | 4 Telnet 明文终端（插入交付） | ✅ 已完成 |
 | 5 端口转发与隧道 | ✅ 已完成 |
 | 6 自动化与批量运维 | ✅ 已完成 |
-| 7 ~ 9（日志审计 / 体验打磨 / 插件打包） | 待开发 |
+| 7 日志与审计 | ✅ 已完成 |
+| 8 ~ 9（体验打磨 / 插件打包） | 待开发 |
 
-### 自动化端到端验证
+### 端到端验证
 
 | 套件 | 脚本 | 结果 |
 | --- | --- | --- |
@@ -511,5 +594,7 @@ node packages/server/dev/mock-telnet-server.mjs
 | 阶段 5 隧道浏览器 | `data/tmp/e2e-browser-tunnel.mjs` | 97/97 |
 | 阶段 6 自动化服务端 | `data/tmp/e2e-automation.mjs` | 196/196 |
 | 阶段 6 自动化浏览器 | `data/tmp/e2e-browser-automation.mjs` | 137/137 |
+| 阶段 7 日志服务端 | `data/tmp/e2e-logging.mjs` | 69/69 |
+| 阶段 7 日志浏览器 | `data/tmp/e2e-browser-logging.mjs` | 80/80 |
 
 运行方式（含端口分配与 `NODE_PATH` 等前置条件）见 [`docs/03-测试指南.md`](docs/03-测试指南.md)。

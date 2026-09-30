@@ -26,6 +26,9 @@ dist/
 !/data/tmp/e2e-browser-tunnel.mjs
 !/data/tmp/e2e-automation.mjs
 !/data/tmp/e2e-browser-automation.mjs
+!/data/tmp/e2e-logging.mjs
+!/data/tmp/e2e-browser-logging.mjs
+!/data/tmp/e2e-browser-phase8.mjs
 
 # 子包内的运行时数据目录（服务端默认数据目录等）
 packages/*/data/

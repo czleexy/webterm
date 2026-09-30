@@ -74,6 +74,11 @@ export interface TerminalSessionEvents {
   closed: [reason: string]
   /** 终端进程退出 */
   exit: [payload: { code: number | null; signal: string | null; reason: string }]
+  /**
+   * 前端上传的 HTML 日志快照分片（阶段 7）。
+   * 只有会话配置启用了 html 格式日志时前端才会发送，装配在 LoggingService 侧完成。
+   */
+  'log-html': [chunk: { seq: number; final: boolean; data: string }]
 }
 
 /** 单条 WS 消息的最大字节数，防止异常客户端发超大帧 */
@@ -576,6 +581,10 @@ export class TerminalSession extends EventEmitter<TerminalSessionEvents> {
       case 'ack':
         this.unackedBytes = Math.max(0, this.unackedBytes - msg.bytes)
         this.recomputeBackpressure()
+        break
+      case 'log-html':
+        // 转发给日志写入器（LoggingService 订阅）；未启用日志时无人监听，直接落地
+        this.emit('log-html', { seq: msg.seq, final: msg.final, data: msg.data })
         break
     }
   }

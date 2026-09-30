@@ -21,6 +21,15 @@ import {
   type ListTerminalsResponse,
   type ListTriggersResponse,
   type ListTunnelsResponse,
+  type ListLogFilesResponse,
+  type LogPreviewResponse,
+  type LoggingSettings,
+  type QueryAuditResponse,
+  type LogFileInfo,
+  type AuditEntry,
+  type AuditEventType,
+  type RedactionRule,
+  type SessionLogSettings,
   type MacroDefinition,
   type MacroStep,
   type ProbeSessionRequest,
@@ -384,6 +393,79 @@ export function runBatch(body: RunBatchRequest): Promise<RunBatchResponse> {
   })
 }
 
+/* ------------------------------------------------------------------ */
+/* 阶段 7：日志与审计                                                   */
+/* ------------------------------------------------------------------ */
+
+export function getLoggingSettings(): Promise<LoggingSettings> {
+  return request<LoggingSettings>('/logs/settings')
+}
+
+export function updateLoggingSettings(
+  body: Partial<Pick<LoggingSettings, 'retentionDays' | 'redactionRules'>>,
+): Promise<{ settings: LoggingSettings }> {
+  return request<{ settings: LoggingSettings }>('/logs/settings', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+export function listLogFiles(params?: {
+  sessionId?: string
+  date?: string
+}): Promise<ListLogFilesResponse> {
+  const search = new URLSearchParams()
+  if (params?.sessionId) search.set('sessionId', params.sessionId)
+  if (params?.date) search.set('date', params.date)
+  const qs = search.toString()
+  return request<ListLogFilesResponse>(`/logs/files${qs ? `?${qs}` : ''}`)
+}
+
+export function previewLogFile(
+  id: string,
+  start: number,
+  count = 500,
+): Promise<LogPreviewResponse> {
+  return request<LogPreviewResponse>(
+    `/logs/files/${encodeURIComponent(id)}/preview?start=${start}&count=${count}`,
+  )
+}
+
+/** 删除单个日志文件 */
+export function deleteLogFile(id: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/logs/files/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+/** 清空某个会话目录的全部日志；返回删除的文件数 */
+export function deleteLogSession(dir: string): Promise<{ ok: boolean; files: number }> {
+  return request<{ ok: boolean; files: number }>(
+    `/logs/sessions/${encodeURIComponent(dir)}`,
+    { method: 'DELETE' },
+  )
+}
+
+/** 下载链接（直接交给 <a href> / window.open，浏览器自己处理流式下载） */
+export function logFileDownloadUrl(id: string): string {
+  return `${API_PREFIX}/logs/files/${encodeURIComponent(id)}/download`
+}
+
+export function queryAudit(params?: {
+  event?: string
+  from?: string
+  to?: string
+  page?: number
+  pageSize?: number
+}): Promise<QueryAuditResponse> {
+  const search = new URLSearchParams()
+  if (params?.event) search.set('event', params.event)
+  if (params?.from) search.set('from', params.from)
+  if (params?.to) search.set('to', params.to)
+  if (params?.page) search.set('page', String(params.page))
+  if (params?.pageSize) search.set('pageSize', String(params.pageSize))
+  const qs = search.toString()
+  return request<QueryAuditResponse>(`/audit${qs ? `?${qs}` : ''}`)
+}
+
 /** 由浏览器当前地址推导 WebSocket 基址，兼容开发态 Vite 代理与生产态同源部署 */
 export function resolveWsBase(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -414,4 +496,12 @@ export type {
   TriggerStats,
   TunnelInfo,
   TunnelSpec,
+  LoggingSettings,
+  LogFileInfo,
+  LogPreviewResponse,
+  AuditEntry,
+  AuditEventType,
+  QueryAuditResponse,
+  RedactionRule,
+  SessionLogSettings,
 }

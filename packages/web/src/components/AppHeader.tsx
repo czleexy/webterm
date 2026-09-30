@@ -30,6 +30,8 @@ interface AppHeaderProps {
   onOpenBroadcast?: () => void
   /** 同步输入是否已开启 —— 入口本身也要变红，不能只在警示条上提示 */
   broadcastOn?: boolean
+  /** 打开日志与审计面板（阶段 7） */
+  onOpenLogs?: () => void
 }
 
 export function AppHeader({
@@ -41,6 +43,7 @@ export function AppHeader({
   triggerCount = 0,
   onOpenBroadcast,
   broadcastOn = false,
+  onOpenLogs,
 }: AppHeaderProps) {
   const mode = useThemeStore((state) => state.mode)
   const toggleTheme = useThemeStore((state) => state.toggle)
@@ -114,6 +117,28 @@ export function AppHeader({
               />
             </svg>
             同步输入{broadcastOn ? '（开）' : ''}
+          </button>
+        ) : null}
+
+        {onOpenLogs ? (
+          <button
+            type="button"
+            data-testid="open-logs"
+            onClick={onOpenLogs}
+            title="日志与审计：会话日志 / 审计 / 保留与脱敏设置"
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1 text-[11px] text-neutral-600 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            <svg viewBox="0 0 24 24" className="size-3.5" aria-hidden="true">
+              <path
+                d="M5 4h10l4 4v12H5zM9 12h6M9 16h6M9 8h3"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            日志
           </button>
         ) : null}
 

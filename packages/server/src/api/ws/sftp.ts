@@ -57,6 +57,8 @@ export const sftpWsRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const { session, queue } = entry
+      // 阶段 7：WS 附加也更新来源 IP（传输虽走 REST 创建，IP 以最近一次交互为准）
+      entry.clientIp = request.ip || '—'
       app.log.info({ sftpId }, 'SFTP WebSocket 已附加')
 
       const send = (payload: unknown): void => {

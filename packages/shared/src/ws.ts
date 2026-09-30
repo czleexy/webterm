@@ -19,6 +19,15 @@ export type ClientControlMessage =
   | { t: 'ping' }
   /** 客户端确认已消费的输出字节数，用于服务端背压腾出缓冲 */
   | { t: 'ack'; bytes: number }
+  /**
+   * HTML 日志快照分片（阶段 7）。
+   *
+   * 前端用 SerializeAddon 序列化**整份**终端缓冲后按 LOG_HTML_CHUNK_BYTES
+   * 切片上传；`final = true` 时服务端把装配好的快照原子写入当天的
+   * `{date}.html`（整份替换，不是追加 —— 文件里永远是完整可回放的转录）。
+   * 单帧受 WS maxPayload 约束，分片本身不会超过 1 MiB。
+   */
+  | { t: 'log-html'; seq: number; final: boolean; data: string }
 
 /** 服务端 → 客户端的控制消息 */
 export type ServerControlMessage =
@@ -204,6 +213,17 @@ export function parseClientControl(raw: string): ClientControlMessage | null {
       const { bytes } = parsed as { bytes?: unknown }
       if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return null
       return { t: 'ack', bytes }
+    }
+    if (t === 'log-html') {
+      const { seq, final, data } = parsed as {
+        seq?: unknown
+        final?: unknown
+        data?: unknown
+      }
+      if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0) return null
+      if (typeof final !== 'boolean') return null
+      if (typeof data !== 'string') return null
+      return { t: 'log-html', seq, final, data }
     }
     return null
   } catch {

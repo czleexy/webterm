@@ -159,6 +159,25 @@ const MIGRATIONS: string[] = [
     updated_at     TEXT NOT NULL
   );
   `,
+  // v3：阶段 7 —— 审计流水表。
+  //
+  // 纯追加：连接 / 断开 / 上传 / 下载 / 脚本执行等事件一行一条，
+  // 不做更新。detail 是入库前就已生成的人读句子（shared 的 describeAudit），
+  // 查询页直接展示 —— 审计的价值在于「事后能看懂」，宁可冗余也不让前端
+  // 拿着结构化字段再去拼一遍会随版本漂移的文案。
+  `
+  CREATE TABLE audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at         TEXT NOT NULL,
+    event      TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    client_ip  TEXT NOT NULL DEFAULT '—',
+    detail     TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE INDEX idx_audit_at ON audit_log(at);
+  CREATE INDEX idx_audit_event ON audit_log(event, at);
+  `,
 ]
 
 export function openDatabase(dbFile: string): Database.Database {

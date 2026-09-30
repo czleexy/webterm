@@ -34,6 +34,20 @@ export interface CreateSftpSessionOptions {
 export interface SftpSessionEntry {
   session: SftpSession
   queue: TransferQueue
+  /**
+   * 最近一次与本会话交互的浏览器来源 IP（REST 创建 / 传输创建 / WS 附加时更新）。
+   * 审计的「用户从 X 上传了 …」取这个值；拿不到时为 `—`。
+   */
+  clientIp: string
+}
+
+/** 一次完成的传输（审计回调的载荷） */
+export interface TransferAuditInfo {
+  title: string
+  direction: 'upload' | 'download'
+  name: string
+  bytes: number
+  clientIp: string
 }
 
 export interface SftpManagerOptions {
@@ -43,6 +57,8 @@ export interface SftpManagerOptions {
   localRoot: string
   /** 传输并发上限 */
   concurrency: number
+  /** 阶段 7：传输完成审计回调（在队列任务进入 done 态时触发） */
+  onTransfer?: (info: TransferAuditInfo) => void
 }
 
 export class SftpManager {
@@ -90,7 +106,20 @@ export class SftpManager {
       remote: new RemoteFs(() => session.sftp()),
     })
 
-    const entry: SftpSessionEntry = { session, queue }
+    const entry: SftpSessionEntry = { session, queue, clientIp: '—' }
+
+    // 阶段 7：传输完成审计。任务进入 done 态时回调一次；
+    // 失败 / 取消不记（审计页关心的是「数据真的移动了」）
+    queue.on('update', (task) => {
+      if (task.state !== 'done') return
+      this.opts.onTransfer?.({
+        title: session.title,
+        direction: task.direction,
+        name: task.name,
+        bytes: task.transferred,
+        clientIp: entry.clientIp,
+      })
+    })
 
     session.on('closed', (reason) => {
       this.entries.delete(session.id)

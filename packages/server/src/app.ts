@@ -16,6 +16,8 @@ import { libraryRoutes } from './api/rest/library.js'
 import { sftpRoutes } from './api/rest/sftp.js'
 import { tunnelRoutes } from './api/rest/tunnels.js'
 import { automationRoutes } from './api/rest/automation.js'
+import { logRoutes } from './api/rest/logs.js'
+import { auditRoutes } from './api/rest/audit.js'
 import { terminalWsRoutes } from './api/ws/terminal.js'
 import { sftpWsRoutes } from './api/ws/sftp.js'
 import { KnownHostsStore } from './ssh/known-hosts.js'
@@ -24,10 +26,12 @@ import { Vault } from './security/vault.js'
 import { CredentialStore } from './security/credential-store.js'
 import { LibraryStore } from './db/library.js'
 import { AutomationStore } from './db/automation.js'
+import { LoggingStore } from './db/logging.js'
 import { openDatabase } from './db/index.js'
 import { SessionResolver } from './api/resolver.js'
 import { SftpManager } from './sftp/sftp-manager.js'
 import { AutomationService } from './automation/automation-service.js'
+import { LoggingService } from './logging/logging-service.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -45,6 +49,8 @@ declare module 'fastify' {
     /** 阶段 6：自动化的持久化层与运行时服务 */
     automationStore: AutomationStore
     automation: AutomationService
+    /** 阶段 7：日志与审计 */
+    logging: LoggingService
   }
 }
 
@@ -94,6 +100,15 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
     logger: app.log,
     localRoot: config.localRoot,
     concurrency: config.sftpConcurrency,
+    // 阶段 7：传输完成 → 审计
+    onTransfer: (info) => {
+      logging.recordAudit(
+        info.direction,
+        info.title,
+        info.clientIp,
+        { name: info.name, bytes: info.bytes },
+      )
+    },
   })
 
   // 阶段 6：自动化（触发器 / 宏 / 脚本 / 批量执行）
@@ -107,6 +122,16 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
     logger: app.log,
   })
 
+  // 阶段 7：日志与审计。审计落 SQLite，日志文件按会话分流到 config.logDir
+  const loggingStore = new LoggingStore(db)
+  const logging = new LoggingService({
+    loggingStore,
+    library,
+    logsRoot: config.logDir,
+    logger: app.log,
+  })
+  logging.startSweeping()
+
   app.decorate('knownHosts', knownHosts)
   app.decorate('terminals', terminals)
   app.decorate('vault', vault)
@@ -116,9 +141,11 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   app.decorate('sftp', sftp)
   app.decorate('automationStore', automationStore)
   app.decorate('automation', automation)
+  app.decorate('logging', logging)
   // 进程退出时统一关闭所有 SSH 连接，避免留下悬挂会话占用远端 VTY；
   // 保险库清零内存密钥，数据库正常关闭（WAL checkpoint）
   app.addHook('onClose', async () => {
+    logging.dispose()
     automation.dispose()
     sftp.dispose()
     terminals.dispose()
@@ -143,6 +170,8 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   await app.register(terminalRoutes, { prefix: API_PREFIX })
   await app.register(tunnelRoutes, { prefix: API_PREFIX })
   await app.register(automationRoutes, { prefix: API_PREFIX })
+  await app.register(logRoutes, { prefix: API_PREFIX })
+  await app.register(auditRoutes, { prefix: API_PREFIX })
   await app.register(sftpRoutes, { prefix: API_PREFIX })
   await app.register(terminalWsRoutes, { prefix: WS_PATH })
   await app.register(sftpWsRoutes, { prefix: WS_SFTP_PATH })

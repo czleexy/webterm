@@ -22,7 +22,7 @@ const PHASES: PhaseItem[] = [
   { id: 4, name: 'Telnet 明文终端', scope: '选项协商 / NAWS / 本地回显 / 端口 23', status: 'done' },
   { id: 5, name: '端口转发与隧道', scope: '-L / -R / -D SOCKS5 / 随会话自动启动', status: 'done' },
   { id: 6, name: '自动化与批量运维', scope: '触发器 / 宏按钮栏 / 沙箱脚本 / 批量执行 / 同步输入', status: 'done' },
-  { id: 7, name: '日志与审计', scope: '会话日志 / 归档轮转 / 审计表 / 脱敏规则', status: 'planned' },
+  { id: 7, name: '日志与审计', scope: '三种日志格式 / 归档轮转 / 分页预览 / 审计表 / 脱敏规则', status: 'done' },
   { id: 8, name: '体验打磨', scope: '主题与字体 / 快捷键 / 终端搜索 / 分屏', status: 'planned' },
   { id: 9, name: '插件与打包', scope: '插件宿主 / 打包发布（npm · Docker）', status: 'planned' },
 ]
@@ -96,10 +96,11 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
       </h1>
       <p className="mt-1.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
         后端跑在本机，负责建立连接与协议处理；浏览器只做渲染与交互。
-        <b className="font-medium text-neutral-700 dark:text-neutral-300">已完成阶段 0 ~ 6</b>
+        <b className="font-medium text-neutral-700 dark:text-neutral-300">已完成阶段 0 ~ 7</b>
         ：多标签终端、会话库与主密码保险库、SFTP 双栏文件传输、SSH / Telnet 双协议支持、
-        端口转发（-L / -R / -D SOCKS5），以及自动化与批量运维
-        （触发器、按钮栏、沙箱脚本、同步输入、批量执行）。下一步是阶段 7：日志与审计。
+        端口转发（-L / -R / -D SOCKS5）、自动化与批量运维（触发器、按钮栏、沙箱脚本、同步输入、批量执行），
+        以及日志与审计（三种日志格式、按天归档与轮转、可配脱敏、八类操作的审计流水）。
+        下一步是阶段 8：体验打磨（主题与字体、快捷键、终端搜索、分屏）。
       </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -216,6 +217,7 @@ export function WelcomePane({ health, onNew }: WelcomePaneProps) {
           return (
             <li
               key={phase.id}
+              data-testid={`welcome-phase-${phase.id}`}
               className={cn(
                 'flex items-center gap-3 bg-white px-3 py-2 dark:bg-neutral-900',
                 phase.status === 'current' && 'bg-amber-50 dark:bg-amber-950/20',

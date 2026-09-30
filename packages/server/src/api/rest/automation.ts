@@ -174,6 +174,11 @@ export const automationRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) return sendValidationError(reply, parsed.error)
     try {
       const result: RunMacroResponse = automation.runMacro(parsed.data)
+      // 阶段 7：宏执行审计
+      const macroName = parsed.data.macroId
+        ? (store.getMacro(parsed.data.macroId)?.name ?? parsed.data.macroId)
+        : (parsed.data.macroName ?? '内联宏')
+      app.logging.recordAudit('macro_run', macroName, request.ip || '—', { name: macroName })
       return reply.code(202).send(result)
     } catch (err) {
       return sendAutomationError(reply, err)
@@ -260,6 +265,11 @@ export const automationRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) return sendValidationError(reply, parsed.error)
     try {
       const result: RunScriptResponse = automation.startScript(parsed.data)
+      // 阶段 7：脚本执行审计（名字取保存的定义；内联试运行用「内联脚本」）
+      const name = parsed.data.scriptId
+        ? (store.getScript(parsed.data.scriptId)?.name ?? parsed.data.scriptId)
+        : '内联脚本'
+      app.logging.recordAudit('script_run', name, request.ip || '—', { name })
       return reply.code(202).send(result)
     } catch (err) {
       return sendAutomationError(reply, err)
@@ -285,6 +295,10 @@ export const automationRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) return sendValidationError(reply, parsed.error)
     try {
       const result: RunBatchResponse = await automation.runBatch(parsed.data)
+      // 阶段 7：批量执行审计
+      app.logging.recordAudit('batch_run', '批量执行', request.ip || '—', {
+        count: parsed.data.targets.length,
+      })
       return reply.send(result)
     } catch (err) {
       return sendAutomationError(reply, err)

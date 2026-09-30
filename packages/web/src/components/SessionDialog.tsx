@@ -16,6 +16,7 @@ import type {
   ConnectionProtocol,
   CredentialSummary,
   LibraryNode,
+  LogFormat,
   SessionRecord,
   SupportedEncoding,
   TunnelSpec,
@@ -24,6 +25,9 @@ import type {
 import {
   DEFAULT_PORTS,
   DEFAULT_TUNNEL_BIND_HOST,
+  LOG_FORMATS,
+  LOG_FORMAT_DESCRIPTION,
+  LOG_FORMAT_LABEL,
   PROTOCOL_LABEL,
   SUPPORTED_ENCODINGS,
   TUNNEL_TYPES,
@@ -81,6 +85,9 @@ interface SessionForm {
   jumpChain: JumpHopForm[]
   /** 随会话自动启动的隧道（阶段 5）；Telnet 无此概念 */
   tunnels: TunnelRowForm[]
+  /** 会话日志（阶段 7）；SSH 与 Telnet 都可用 */
+  logEnabled: boolean
+  logFormat: LogFormat
 }
 
 const EMPTY_FORM: SessionForm = {
@@ -96,6 +103,8 @@ const EMPTY_FORM: SessionForm = {
   legacyCompat: 'auto',
   jumpChain: [],
   tunnels: [],
+  logEnabled: false,
+  logFormat: 'plain',
 }
 
 /** 表单里的一行隧道定义（端口用字符串承载，便于输入中途的空值） */
@@ -217,6 +226,8 @@ export function SessionDialog({
           credentialId: h.credentialId,
         })),
         tunnels: (s.tunnels ?? []).map(specToRow),
+        logEnabled: s.logging?.enabled ?? false,
+        logFormat: s.logging?.format ?? 'plain',
       })
     } else {
       setForm({ ...EMPTY_FORM, parentId: defaultParentId })
@@ -264,6 +275,8 @@ export function SessionDialog({
       port: Number.parseInt(form.port, 10) || DEFAULT_PORTS[form.protocol],
       encoding: form.encoding,
       term: form.term.trim() || 'xterm-256color',
+      // 日志配置对 SSH 与 Telnet 一视同仁：记的是终端输出，与协议能力无关
+      logging: { enabled: form.logEnabled, format: form.logFormat },
     }
     if (isTelnet) return base
     return {
@@ -734,6 +747,43 @@ export function SessionDialog({
             })}
           </div>
         )}
+
+        {/* 日志：按天归档终端输出（阶段 7）；SSH 与 Telnet 都可用 */}
+        <div className="mt-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-neutral-500 dark:text-neutral-400">
+              会话日志（按天归档到服务端，可在「日志」面板预览与下载）
+            </span>
+            <label className="flex items-center gap-1.5 text-xs text-neutral-600 dark:text-neutral-300">
+              <input
+                type="checkbox"
+                data-testid="session-log-enabled"
+                checked={form.logEnabled}
+                onChange={(e) => patch({ logEnabled: e.target.checked })}
+              />
+              启用
+            </label>
+          </div>
+          {form.logEnabled ? (
+            <div data-testid="session-log-config" className="mt-2 flex items-center gap-2">
+              <select
+                data-testid="session-log-format"
+                value={form.logFormat}
+                onChange={(e) => patch({ logFormat: e.target.value as LogFormat })}
+                className={inputClass}
+              >
+                {LOG_FORMATS.map((f) => (
+                  <option key={f} value={f}>
+                    {LOG_FORMAT_LABEL[f]}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
+                {LOG_FORMAT_DESCRIPTION[form.logFormat]}
+              </span>
+            </div>
+          ) : null}
+        </div>
 
         {error ? (
           <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-950/50 dark:text-red-400">

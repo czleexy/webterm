@@ -10,6 +10,7 @@ import { create } from 'zustand'
 import type {
   ConnectionProtocol,
   SessionConfig,
+  SessionLogSettings,
   TelnetNegotiationSummary,
   TerminalNegotiationSummary,
 } from '@webterm/shared'
@@ -63,6 +64,8 @@ export interface TerminalTab {
    * 标签栏、批量执行的目标列表都可能要读它。
    */
   labels?: string[]
+  /** 会话日志配置（阶段 7）：html 格式时面板需要定期上传序列化快照 */
+  logging?: SessionLogSettings
   /** 服务端记录的实际 PTY 尺寸 */
   dims: { cols: number; rows: number }
   createdAt: number

@@ -9,6 +9,7 @@ import type { ConnectionProtocol } from './constants.js'
 import { DEFAULT_PORTS } from './constants.js'
 import type { TunnelSpec, TunnelType } from './tunnel.js'
 import type { AutomationCapabilities } from './automation.js'
+import type { LoggingCapabilities, SessionLogSettings } from './logging.js'
 
 /** 统一错误响应体 */
 export interface ApiError {
@@ -206,6 +207,11 @@ export interface CreateTerminalResponse {
   tunnelWarnings?: string[]
   /** 随会话自动运行的脚本 id 列表（阶段 6），供前端展示与排障 */
   startupScripts?: string[]
+  /**
+   * 本会话的日志配置（阶段 7）。仅当会话库记录启用了日志时返回：
+   * html 格式时前端需要据此挂 SerializeAddon 并定期上传快照。
+   */
+  logging?: SessionLogSettings
 }
 
 /** 协商摘要（与 shared/ws.ts 的 TerminalNegotiationInfo 保持一致但更精简） */
@@ -367,6 +373,11 @@ export interface SessionRecord {
    * 改一处即对所有引用它的会话生效。
    */
   startupScripts?: string[]
+  /**
+   * 会话日志配置（阶段 7）。SSH 与 Telnet 都可用 —— 日志记的是终端输出，
+   * 与协议的认证/通道能力无关。
+   */
+  logging?: SessionLogSettings
 }
 
 export type SupportedEncodingLiteral = 'utf8' | 'gbk' | 'gb18030' | 'big5' | 'latin1'
@@ -426,6 +437,8 @@ export interface CapabilitiesResponse {
   maxTunnelsPerSession: number
   /** 自动化能力（阶段 6）：触发器 / 宏 / 脚本 / 批量的各项上限 */
   automation: AutomationCapabilities
+  /** 日志与审计能力（阶段 7） */
+  logging: LoggingCapabilities
   /** 单条终端输出的背压水位（字节） */
   backpressureHighWaterMark: number
   backpressureLowWaterMark: number

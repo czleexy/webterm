@@ -249,6 +249,8 @@ export const sftpRoutes: FastifyPluginAsync = async (app) => {
         ...(jumpChain ? { jumpChain } : {}),
         legacyCompat,
       })
+      // 阶段 7：审计用来源 IP
+      entry.clientIp = request.ip || '—'
 
       const response: CreateSftpSessionResponse = {
         sftpId: entry.session.id,
@@ -500,7 +502,8 @@ export const sftpRoutes: FastifyPluginAsync = async (app) => {
     const parsed = CreateTransferRequestSchema.safeParse(request.body)
     if (!parsed.success) return sendValidationError(reply, parsed.error)
     try {
-      const { session, queue } = requireEntry(request.params.id)
+      const entryOwner = requireEntry(request.params.id)
+      const { session, queue } = entryOwner
       const input: CreateTransferRequest = parsed.data
 
       // 路径侧校验：远端路径必须绝对；本地路径交由 LocalGuard 在队列里
@@ -513,6 +516,8 @@ export const sftpRoutes: FastifyPluginAsync = async (app) => {
       void session
 
       const tasks: TransferTask[] = queue.enqueue({ ...input, sources, targetDir })
+      // 阶段 7：审计的来源 IP 取「发起这次传输的浏览器」
+      entryOwner.clientIp = request.ip || '—'
       return reply.code(201).send({ tasks } satisfies CreateTransferResponse)
     } catch (err) {
       return handle(reply, err)

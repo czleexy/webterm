@@ -16,6 +16,10 @@ import {
   DEFAULT_TERM_COLS,
   DEFAULT_TERM_ROWS,
   DEFAULT_TUNNEL_BIND_HOST,
+  LOG_FORMATS,
+  LOG_MAX_REDACTION_RULES,
+  LOG_MAX_RETENTION_DAYS,
+  LOG_MIN_RETENTION_DAYS,
   MACRO_MAX_DELAY_MS,
   MACRO_MAX_EXPECT_TIMEOUT_MS,
   MACRO_MAX_STEPS,
@@ -273,6 +277,13 @@ export const SessionRecordSchema = z
       .array(z.string().trim().min(1))
       .max(MAX_STARTUP_SCRIPTS, `单个会话最多挂 ${MAX_STARTUP_SCRIPTS} 个启动脚本`)
       .default([]),
+    /** 阶段 7：会话日志配置（SSH 与 Telnet 都可用） */
+    logging: z
+      .object({
+        enabled: z.boolean(),
+        format: z.enum(LOG_FORMATS).default('plain'),
+      })
+      .optional(),
   })
   .superRefine((value, ctx) => {
     if (value.protocol === 'ssh') {
@@ -658,3 +669,27 @@ export const RunBatchRequestSchema = z.object({
   timeoutMs: z.coerce.number().int().min(1000).max(BATCH_MAX_TIMEOUT_MS).optional(),
 })
 
+
+/* ------------------------------------------------------------------ */
+/* 阶段 7：日志与审计                                                   */
+/* ------------------------------------------------------------------ */
+
+const RedactionRuleSchema = z.object({
+  id: z.string().trim().min(1).max(64).optional(),
+  name: z.string().trim().min(1, '规则名不能为空').max(64, '规则名过长'),
+  pattern: z.string().min(1, '正则不能为空').max(512, '正则过长'),
+  replacement: z.string().max(256, '替换文本过长').default(''),
+  enabled: z.boolean().default(true),
+})
+
+export const UpdateLoggingSettingsSchema = z
+  .object({
+    retentionDays: z.coerce.number().int().min(LOG_MIN_RETENTION_DAYS).max(LOG_MAX_RETENTION_DAYS).optional(),
+    redactionRules: z
+      .array(RedactionRuleSchema)
+      .max(LOG_MAX_REDACTION_RULES, `脱敏规则最多 ${LOG_MAX_REDACTION_RULES} 条`)
+      .optional(),
+  })
+  .refine((v) => v.retentionDays !== undefined || v.redactionRules !== undefined, {
+    message: '至少提供一个要更新的字段',
+  })

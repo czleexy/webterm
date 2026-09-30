@@ -14,6 +14,7 @@ import type {
   CreateTerminalResponse,
   ListTerminalsResponse,
   SessionConfig,
+  SessionLogSettings,
   SshTarget,
   TerminalListItem,
   TunnelSpec,
@@ -51,6 +52,7 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
     let jumpChain: SshTarget[] | undefined
     let tunnels: TunnelSpec[] | undefined
     let startupScripts: string[] = []
+    let loggingSettings: SessionLogSettings | undefined
 
     if (input.sessionId) {
       try {
@@ -83,6 +85,8 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
           tunnels = (record.tunnels ?? []).length > 0 ? record.tunnels : undefined
           startupScripts = record.startupScripts ?? []
         }
+        // 阶段 7：会话级日志配置（SSH 与 Telnet 都允许）
+        loggingSettings = record.logging
       } catch (err) {
         if (err instanceof VaultError) {
           return sendError(reply, 423, err.code, err.message)
@@ -112,6 +116,28 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
       // SshError 与 TelnetError 都走同一条响应路径（结构一致）
       return sendTerminalError(reply, err)
     }
+
+    // 阶段 7：会话日志 —— 会话库记录启用了日志时按配置挂写入器。
+    // 连接失败不会走到这里，所以审计里不会有「没连上」的连接事件。
+    const logSettings = app.logging.attachSession(session, {
+      sessionId: input.sessionId,
+      sessionName: input.sessionId
+        ? (app.library.get(input.sessionId)?.name ?? session.title)
+        : session.title,
+      settings: loggingSettings,
+    })
+
+    // 阶段 7：连接 / 断开审计。断开走 closed 事件（主动关闭与异常掉线都覆盖）。
+    const clientIp = request.ip || '—'
+    app.logging.recordAudit('connect', session.title, clientIp, {
+      protocol: protocolOf(config),
+      host: config.target.host,
+      port: config.target.port,
+      username: targetUsername(config) || undefined,
+    })
+    session.once('closed', (reason) => {
+      app.logging.recordAudit('disconnect', session.title, clientIp, { reason })
+    })
 
     const info = session.negotiationInfo
     const response: CreateTerminalResponse = {
@@ -143,6 +169,7 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
     const tunnelWarnings = session.tunnelStartWarnings
     if (tunnelWarnings.length > 0) response.tunnelWarnings = tunnelWarnings
     if (startupScripts.length > 0) response.startupScripts = startupScripts
+    if (logSettings.enabled) response.logging = logSettings
 
     // 阶段 6：装配触发器与启动脚本。
     // 必须放在会话就绪之后 —— 触发器要往远端写数据，会话没起来时注入会丢。
@@ -173,8 +200,9 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
   })
 
   app.delete<{ Params: { id: string } }>('/terminals/:id', async (request, reply) => {
-    // 先摘自动化（停掉触发器的延迟定时器），再关隧道与连接
+    // 先摘自动化（停掉触发器的延迟定时器）与日志写入器，再关隧道与连接
     app.automation.detachSession(request.params.id)
+    app.logging.detachSession(request.params.id)
     // close 会先撤掉隧道（等监听端口真正释放）再拆 SSH 连接
     const closed = await manager.close(request.params.id)
     if (!closed) {

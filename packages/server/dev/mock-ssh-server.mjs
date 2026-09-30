@@ -510,6 +510,7 @@ function handleCommand(stream, cmd, pty, requestQuit, shellCtl) {
           '  confirm        出不换行的 (yes/no)? 提示并等待确认\r\n' +
           '  pager <页数>   分页输出，每页以 --More-- 结束\r\n' +
           '  errors         输出含 error/failed 与错误码的行\r\n' +
+          '  color          输出带 ANSI 颜色的标记行（日志剥离验证）\r\n' +
           '  exit           结束会话\r\n',
       )
       break
@@ -563,6 +564,14 @@ function handleCommand(stream, cmd, pty, requestQuit, shellCtl) {
 
     case 'utf8':
       w(stream, 'UTF-8 中文测试：你好，世界 —— 终端编码直通验证 ✅')
+      break
+
+    case 'color':
+      // 阶段 7：日志剥离验证 —— 终端里看到红色/绿色字样，日志文件里不应再有转义字节
+      w(
+        stream,
+        '\x1b[31mRED-COLOR-MARKER\x1b[0m 与 \x1b[32mGREEN-COLOR-MARKER\x1b[0m 同一行',
+      )
       break
 
     case 'gbk': {

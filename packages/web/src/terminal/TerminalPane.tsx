@@ -11,9 +11,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
+import type { ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
+import { SerializeAddon } from '@xterm/addon-serialize'
 import '@xterm/xterm/css/xterm.css'
 import { DEFAULT_SCROLLBACK, type ServerControlMessage } from '@webterm/shared'
 import { useTerminalStore, type TerminalTab } from '../store/useTerminalStore'
@@ -280,6 +282,77 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
     return () => observer.disconnect()
   }, [active])
 
+  /* ------------------------------------------------------------------ */
+  /* 4.5 HTML 会话日志：定期上传整份序列化快照（阶段 7）                    */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
+    const settings = tab.logging
+    if (!termReady || !settings?.enabled || settings.format !== 'html') return
+    const term = termRef.current
+    if (!term) return
+
+    const addon = new SerializeAddon()
+    term.loadAddon(addon)
+
+    let dirty = false
+    // 每批输出解析完标记为脏：没有新输出就不重复上传（整份序列化并不便宜）
+    const writeSub = term.onWriteParsed(() => {
+      dirty = true
+    })
+
+    let inFlight = false
+    const flush = () => {
+      if (inFlight || !dirty || !isWritable()) return
+      inFlight = true
+      dirty = false
+      try {
+        // 注意：serialize() 输出的是 ANSI 文本，HTML 回放必须用 serializeAsHTML()
+        // 底色跟当前终端主题走（浅色主题下终端是白底，写死深色会让回放页割裂）
+        const html = wrapHtmlDocument(
+          addon.serializeAsHTML(),
+          tab.title,
+          (term.options.theme as ITheme | undefined) ?? terminalTheme(useThemeStore.getState().mode),
+        )
+        // 单帧受 WS maxPayload（1 MiB）约束；中文最坏 3 字节/字符、JSON 转义
+        // 最坏再翻倍，每片 60k 字符最坏约 360 KB，留足余量
+        const CHUNK = 60_000
+        const total = Math.max(1, Math.ceil(html.length / CHUNK))
+        for (let i = 0; i < total; i += 1) {
+          sendControl({
+            t: 'log-html',
+            seq: i,
+            final: i === total - 1,
+            data: html.slice(i * CHUNK, (i + 1) * CHUNK),
+          })
+        }
+      } catch {
+        // 序列化失败不影响终端本身，等下一轮再试
+        dirty = true
+      } finally {
+        inFlight = false
+      }
+    }
+
+    // 15 秒一拍：快照丢失窗口上限 = 间隔 + 一次上传时长
+    const timer = setInterval(flush, 15_000)
+    const onUnload = () => flush()
+    window.addEventListener('beforeunload', onUnload)
+
+    return () => {
+      clearInterval(timer)
+      window.removeEventListener('beforeunload', onUnload)
+      // 卸载前最后一搏（此时 WS 通常还活着 —— 关闭标签先走 DELETE 之外的路径时）
+      flush()
+      writeSub.dispose()
+      addon.dispose()
+    }
+  }, [isWritable, sendControl, tab.logging, tab.title, termReady])
+
+  /* ------------------------------------------------------------------ */
+  /* 5. 搜索与工具栏                                                       */
+  /* ------------------------------------------------------------------ */
+
   const runSearch = useCallback(
     (direction: 'next' | 'prev') => {
       if (!searchTerm) return
@@ -399,6 +472,30 @@ function ToolbarButton({
     >
       {children}
     </button>
+  )
+}
+
+/**
+ * 序列化片段 → 可在浏览器直接打开的完整 HTML 文档（等宽、保留色彩）。
+ *
+ * 底色与前景色取自**当前终端主题**而不是写死深色：应用是浅色主题时终端本来就是白底，
+ * 写死深色会让回放页出现「白底终端块浮在深色页面上」的割裂观感。
+ */
+function wrapHtmlDocument(fragment: string, title: string, theme: ITheme): string {
+  const safeTitle = title
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  const background = theme.background ?? '#101418'
+  const foreground = theme.foreground ?? '#d4d4d4'
+  return (
+    `<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n` +
+    `<title>${safeTitle} · 会话日志</title>\n<style>\n` +
+    `body{background:${background};color:${foreground};font-family:"JetBrains Mono",Consolas,monospace;` +
+    `font-size:13px;line-height:1.25;padding:8px;margin:0}\n` +
+    `pre{white-space:pre-wrap;word-break:break-all;margin:0}\n` +
+    `.xterm-bold{font-weight:700}.xterm-italic{font-style:italic}.xterm-underline{text-decoration:underline}\n` +
+    `</style>\n</head>\n<body>\n<pre>${fragment}</pre>\n</body>\n</html>\n`
   )
 }
 

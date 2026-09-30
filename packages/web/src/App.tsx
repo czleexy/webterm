@@ -10,6 +10,7 @@ import { NewSessionDialog, type ConnectMode } from './components/NewSessionDialo
 import { SessionDialog } from './components/SessionDialog'
 import { TunnelPanel } from './components/TunnelPanel'
 import { AutomationPanel } from './components/AutomationPanel'
+import { LogsPanel } from './logs/LogsPanel'
 import { BroadcastBar, BroadcastPanel } from './automation/BroadcastPanel'
 import { VaultGate } from './components/VaultGate'
 import { useHealth } from './hooks/useHealth'
@@ -70,6 +71,7 @@ export default function App() {
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickMode, setQuickMode] = useState<ConnectMode>('terminal')
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false)
+  const [logsOpen, setLogsOpen] = useState(false)
   const [editingSession, setEditingSession] = useState<LibraryNode | null>(null)
   const [sessionParentId, setSessionParentId] = useState<string | null>(null)
   const [folderPrompt, setFolderPrompt] = useState<{ parentId: string | null; name: string } | null>(null)
@@ -399,6 +401,7 @@ export default function App() {
         triggerCount={enabledTriggerCount}
         onOpenBroadcast={() => setBroadcastPanelOpen(true)}
         broadcastOn={broadcastEnabled}
+        onOpenLogs={() => setLogsOpen(true)}
       />
 
       {/* 同步输入开着时，工作区顶部常驻警示条 —— 不能只靠一个小指示灯 */}
@@ -482,6 +485,7 @@ export default function App() {
 
       <TunnelPanel />
       <AutomationPanel />
+      <LogsPanel open={logsOpen} onClose={() => setLogsOpen(false)} />
       <BroadcastPanel />
     </div>
   )

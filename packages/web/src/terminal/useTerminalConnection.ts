@@ -277,6 +277,8 @@ export function useTerminalConnection({
           attachToken: conn.attachToken,
           wsPath: conn.wsPath,
           negotiation: conn.negotiation,
+          // 阶段 7：html 日志时面板据此定期上传序列化快照
+          logging: conn.logging,
         })
         // 随会话自动启动的隧道可以失败（端口被占用等），但这不影响连接本身。
         // 必须明确告诉用户，否则他会以为「隧道配好了」却在别处找不到原因。

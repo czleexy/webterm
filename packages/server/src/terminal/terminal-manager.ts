@@ -31,6 +31,15 @@ export class TerminalManager {
   private readonly logger: TerminalLogger
   /** 用于回收「创建后从未附加」的终端 */
   private readonly gcTimer: NodeJS.Timeout
+  /**
+   * 会话生命周期钩子（阶段 9 引入，供插件订阅）。
+   *
+   * 不做成 EventEmitter 是为了**保持订阅者可枚举**：卸载插件时必须能
+   * 精确退订，否则一个已停用的插件还会继续收到会话事件 —— 这种 bug
+   * 在「界面显示已停用」的前提下极难被发现。
+   */
+  private readonly createdHooks = new Set<(session: TerminalSession) => void>()
+  private readonly closedHooks = new Set<(session: TerminalSession, reason: string) => void>()
   private disposed = false
 
   constructor(knownHosts: KnownHostsStore, logger: TerminalLogger) {
@@ -67,6 +76,26 @@ export class TerminalManager {
   }
 
   /**
+   * 订阅「会话已建立」。注册后返回退订函数。
+   * 钩子抛错会中断会话创建吗？不会 —— 逐个 try/catch，一个坏订阅者
+   * （比如某插件的回调写错了）不该让用户连不上机器。
+   */
+  onSessionCreated(hook: (session: TerminalSession) => void): () => void {
+    this.createdHooks.add(hook)
+    return () => {
+      this.createdHooks.delete(hook)
+    }
+  }
+
+  /** 订阅「会话已关闭」（任何原因：远端退出、用户关闭、进程退出） */
+  onSessionClosed(hook: (session: TerminalSession, reason: string) => void): () => void {
+    this.closedHooks.add(hook)
+    return () => {
+      this.closedHooks.delete(hook)
+    }
+  }
+
+  /**
    * 创建并启动一个终端会话。
    * SSH 连接在此阶段建立，失败会向上抛出（由 REST 层转成 HTTP 错误）。
    */
@@ -87,6 +116,13 @@ export class TerminalManager {
     session.on('closed', (reason) => {
       this.sessions.delete(session.id)
       this.logger.debug({ terminalId: session.id, reason, remaining: this.sessions.size }, '终端已从注册表移除')
+      for (const hook of [...this.closedHooks]) {
+        try {
+          hook(session, reason)
+        } catch (err) {
+          this.logger.warn({ terminalId: session.id, err: String(err) }, '会话关闭钩子抛错')
+        }
+      }
     })
 
     this.sessions.set(session.id, session)
@@ -97,6 +133,16 @@ export class TerminalManager {
       // 启动失败必须从注册表移除，否则会留下永远不会被使用的条目
       session.shutdown('启动失败')
       throw err
+    }
+
+    // 启动成功后才通知：连接失败的会话对订阅者来说从未存在过，
+    // 让它先收到 opened 再收到 closed 只会让插件多写一段无意义的兜底逻辑
+    for (const hook of [...this.createdHooks]) {
+      try {
+        hook(session)
+      } catch (err) {
+        this.logger.warn({ terminalId: session.id, err: String(err) }, '会话创建钩子抛错')
+      }
     }
 
     return session
@@ -178,5 +224,7 @@ export class TerminalManager {
     this.disposed = true
     clearInterval(this.gcTimer)
     this.closeAll()
+    this.createdHooks.clear()
+    this.closedHooks.clear()
   }
 }

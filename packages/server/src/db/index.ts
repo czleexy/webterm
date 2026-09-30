@@ -82,6 +82,15 @@ export interface ScriptRow {
   updated_at: string
 }
 
+export interface PluginStateRow {
+  plugin_id: string
+  /** 0 / 1 */
+  enabled: number
+  /** 用户覆盖的配置项（JSON 对象）；未覆盖的键用清单里的默认值 */
+  config_json: string
+  updated_at: string
+}
+
 const MIGRATIONS: string[] = [
   // v1：初始表结构
   `
@@ -177,6 +186,23 @@ const MIGRATIONS: string[] = [
 
   CREATE INDEX idx_audit_at ON audit_log(at);
   CREATE INDEX idx_audit_event ON audit_log(event, at);
+  `,
+  // v4：阶段 9 —— 插件状态。
+  //
+  // 只存「用户的决定」：启用与否、改过哪些配置。
+  // 清单、注册项、日志都是**运行时事实**，每次加载现算 —— 把它们也落库
+  // 会出现「插件文件已经改了但库里还是旧的」这种必须手动同步的状态，
+  // 而插件的全部意义就在于「把文件放进去就能用」。
+  //
+  // 表里出现而目录里已消失的 id 不清理：用户可能只是临时把插件目录移走了，
+  // 删掉他那份改过的配置是更糟的结果。
+  `
+  CREATE TABLE plugin_state (
+    plugin_id   TEXT PRIMARY KEY,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    updated_at  TEXT NOT NULL
+  );
   `,
 ]
 

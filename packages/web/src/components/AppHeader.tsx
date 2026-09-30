@@ -44,6 +44,10 @@ interface AppHeaderProps {
   onOpenLogs?: () => void
   /** 打开设置面板（阶段 8） */
   onOpenSettings?: () => void
+  /** 打开插件面板（阶段 9） */
+  onOpenPlugins?: () => void
+  /** 加载失败的插件数量：> 0 时入口上出现红色角标 */
+  pluginErrorCount?: number
   /** 分屏布局（阶段 8）；不传则不显示布局切换 */
   layoutMode?: LayoutMode
   onLayoutChange?: (mode: LayoutMode) => void
@@ -62,6 +66,8 @@ export function AppHeader({
   broadcastOn = false,
   onOpenLogs,
   onOpenSettings,
+  onOpenPlugins,
+  pluginErrorCount = 0,
   layoutMode,
   onLayoutChange,
   onToggleSidebar,
@@ -281,6 +287,37 @@ export function AppHeader({
             </svg>
           )}
         </button>
+
+        {onOpenPlugins ? (
+          <button
+            type="button"
+            data-testid="open-plugins"
+            onClick={onOpenPlugins}
+            title={t('header.plugins.title')}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1 text-[11px] text-neutral-600 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            <svg viewBox="0 0 24 24" className="size-3.5" aria-hidden="true">
+              <path
+                d="M10 4h4v4h4v4h-4v4h-4v-4H6V8h4z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinejoin="round"
+              />
+            </svg>
+            {t('header.plugins')}
+            {/* 角标只在出错时出现：正常加载是常态，不该占用户的注意力 */}
+            {pluginErrorCount > 0 ? (
+              <span
+                data-testid="plugin-error-badge"
+                title={`${pluginErrorCount} 个插件加载失败`}
+                className="rounded bg-red-100 px-1 text-[10px] font-medium text-red-700 dark:bg-red-950/60 dark:text-red-300"
+              >
+                {pluginErrorCount}
+              </span>
+            ) : null}
+          </button>
+        ) : null}
 
         {onOpenSettings ? (
           <button

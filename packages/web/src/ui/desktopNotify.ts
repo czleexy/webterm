@@ -65,7 +65,7 @@ export function notifyDesktop(title: string, body: string, options: DesktopNotif
 
 /** 组合入口：按事件类型查开关，再发系统通知 */
 export function notifyEvent(
-  event: 'disconnect' | 'batchComplete' | 'triggerHit',
+  event: 'disconnect' | 'batchComplete' | 'triggerHit' | 'pluginNotify',
   title: string,
   body: string,
 ): void {
@@ -75,7 +75,9 @@ export function notifyEvent(
       ? settings.onDisconnect
       : event === 'batchComplete'
         ? settings.onBatchComplete
-        : settings.onTriggerHit
+        : event === 'triggerHit'
+          ? settings.onTriggerHit
+          : settings.onPluginNotify
   if (!allowed) return
   notifyDesktop(title, body)
 }

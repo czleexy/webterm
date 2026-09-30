@@ -31,7 +31,12 @@ const PHASES: PhaseItem[] = [
     scope: '主题与字体 / 快捷键 / 终端搜索 / 关键词高亮 / 分屏 / 通知 / i18n',
     status: 'done',
   },
-  { id: 9, name: '插件与打包', scope: '插件宿主 / 打包发布（npm · Docker）', status: 'planned' },
+  {
+    id: 9,
+    name: '插件与打包',
+    scope: '插件宿主（触发器动作 / 命令 / 面板） / npm 包 · Docker 镜像 · 便携目录',
+    status: 'done',
+  },
 ]
 
 const STATUS_BADGE: Record<PhaseStatus, { textKey: MessageKey; className: string }> = {

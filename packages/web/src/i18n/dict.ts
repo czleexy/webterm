@@ -54,6 +54,8 @@ const zhCN = {
   'header.broadcast.on': '（开）',
   'header.tunnels': '隧道',
   'header.tunnels.title': '端口转发与隧道（-L / -R / -D）',
+  'header.plugins': '插件',
+  'header.plugins.title': '插件：触发器动作 / 命令 / 面板',
 
   'sidebar.sessions': '会话库',
   'sidebar.connections': '连接',
@@ -73,10 +75,11 @@ const zhCN = {
 
   'welcome.headline': '浏览器里的 SSH / Telnet 工作台',
   'welcome.intro.lead': '后端跑在本机，负责建立连接与协议处理；浏览器只做渲染与交互。',
-  'welcome.intro.done': '已完成阶段 0 ~ 8',
+  'welcome.intro.done': '已完成阶段 0 ~ 9',
   'welcome.intro.body':
-    '：多标签终端、会话库与主密码保险库、SFTP 双栏文件传输、SSH / Telnet 双协议支持、端口转发（-L / -R / -D SOCKS5）、自动化与批量运维、日志与审计，以及体验打磨（8 套终端配色、字体与快捷键自定义、终端搜索与关键词高亮、2/4 宫格分屏、桌面通知、中英双语界面）。',
-  'welcome.intro.next': '下一步是阶段 9：插件机制与打包发布。',
+    '：多标签终端、会话库与主密码保险库、SFTP 双栏文件传输、SSH / Telnet 双协议支持、端口转发（-L / -R / -D SOCKS5）、自动化与批量运维、日志与审计、体验打磨（8 套终端配色、字体与快捷键自定义、终端搜索与关键词高亮、2/4 宫格分屏、桌面通知、中英双语界面），以及插件机制（触发器动作 / 命令 / 面板三类注册项 + 全局事件通道）与打包发布。',
+  'welcome.intro.next':
+    '发布形态已就绪：npm 全局包（webterm 命令）、Docker 镜像、便携目录，三种形态跑的是同一份产物。',
   'welcome.newConnection': '新建连接',
   'welcome.shortcuts':
     '支持 SSH 与 Telnet（端口 23）· 快捷键：Alt+T 新建 · Alt+W 关闭 · Alt+↑/↓ 切换标签 · Ctrl+F 搜索 · Alt+1/2/4 切换布局 · Alt+, 设置',
@@ -128,6 +131,7 @@ const zhCN = {
   'settings.notify.onDisconnect': '连接断开时提醒',
   'settings.notify.onBatch': '批量任务完成时提醒',
   'settings.notify.onTrigger': '触发器命中时提醒',
+  'settings.notify.onPlugin': '插件通知时提醒',
 
   'settings.highlight.hint': '命中规则的行会铺一层底色。颜色按界面明暗自动折算，保证两种主题下都看得清。',
   'settings.highlight.add': '新增规则',
@@ -219,6 +223,8 @@ const enUS: Record<MessageKey, string> = {
   'header.broadcast': 'Broadcast',
   'header.broadcast.title': 'Broadcast: send one keystroke to many terminals',
   'header.broadcast.on': '(on)',
+  'header.plugins': 'Plugins',
+  'header.plugins.title': 'Plugins: trigger actions / commands / panels',
   'header.tunnels': 'Tunnels',
   'header.tunnels.title': 'Port forwarding & tunnels (-L / -R / -D)',
 
@@ -241,10 +247,11 @@ const enUS: Record<MessageKey, string> = {
   'welcome.headline': 'An SSH / Telnet workbench in your browser',
   'welcome.intro.lead':
     'The backend runs locally and owns connections and protocol work; the browser only renders and interacts.',
-  'welcome.intro.done': 'Phases 0–8 are complete',
+  'welcome.intro.done': 'Phases 0–9 are complete',
   'welcome.intro.body':
-    ': multi-tab terminal, session library with a master-password vault, dual-pane SFTP, SSH / Telnet dual protocol, port forwarding (-L / -R / -D SOCKS5), automation and batch operations, logs and auditing, plus the polish pass (8 terminal color schemes, customizable fonts and shortcuts, terminal search and keyword highlighting, 2/4-pane split view, desktop notifications, Chinese/English UI).',
-  'welcome.intro.next': 'Next up: phase 9 — plugin host and packaging.',
+    ': multi-tab terminal, session library with a master-password vault, dual-pane SFTP, SSH / Telnet dual protocol, port forwarding (-L / -R / -D SOCKS5), automation and batch operations, logs and auditing, the polish pass (8 terminal color schemes, customizable fonts and shortcuts, terminal search and keyword highlighting, 2/4-pane split view, desktop notifications, Chinese/English UI), and the plugin host (trigger actions / commands / panels plus a global event channel) with packaging.',
+  'welcome.intro.next':
+    'Shipping forms are ready: a global npm package (the webterm command), a Docker image, and a portable directory — all running the same build.',
   'welcome.newConnection': 'New connection',
   'welcome.shortcuts':
     'SSH and Telnet (port 23) · Shortcuts: Alt+T new · Alt+W close · Alt+↑/↓ switch tab · Ctrl+F search · Alt+1/2/4 layout · Alt+, settings',
@@ -301,6 +308,7 @@ const enUS: Record<MessageKey, string> = {
   'settings.notify.onDisconnect': 'Notify on disconnect',
   'settings.notify.onBatch': 'Notify when a batch finishes',
   'settings.notify.onTrigger': 'Notify on trigger hit',
+  'settings.notify.onPlugin': 'Notify on plugin message',
 
   'settings.highlight.hint':
     'Matching lines get a background band. Colors adapt to the UI theme so they stay readable.',

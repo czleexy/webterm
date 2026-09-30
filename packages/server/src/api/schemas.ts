@@ -498,12 +498,29 @@ export const TriggerScriptActionSchema = z.object({
   scriptId: z.string().trim().min(1, '必须指定脚本'),
 })
 
+/**
+ * 插件动作（阶段 9）。
+ *
+ * 这里**只校验形状，不校验插件是否真的存在** ——
+ * 规则可以被导出、被改、被别的机器导入，保存时插件没装不等于规则是错的。
+ * 「插件动作已不存在」由运行时在触发的那一刻报出来（进触发器统计的 lastError），
+ * 而不是在保存时把一个用户无法解决的错误挡在前面。
+ */
+export const TriggerPluginActionSchema = z.object({
+  type: z.literal('plugin'),
+  pluginId: z.string().trim().min(1, '必须指定插件').max(64),
+  actionId: z.string().trim().min(1, '必须指定插件动作').max(64),
+  label: z.string().trim().max(64).optional(),
+  params: z.string().max(1024, '插件动作参数过长').optional(),
+})
+
 export const TriggerActionSchema = z.discriminatedUnion('type', [
   TriggerSendActionSchema,
   TriggerHighlightActionSchema,
   TriggerNotifyActionSchema,
   TriggerLabelActionSchema,
   TriggerScriptActionSchema,
+  TriggerPluginActionSchema,
 ])
 
 const TriggerRuleFields = {
@@ -691,5 +708,33 @@ export const UpdateLoggingSettingsSchema = z
       .optional(),
   })
   .refine((v) => v.retentionDays !== undefined || v.redactionRules !== undefined, {
+    message: '至少提供一个要更新的字段',
+  })
+
+/* ------------------------------------------------------------------ */
+/* 阶段 9：插件                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 配置值只允许字符串 / 数字 / 布尔。
+ *
+ * 关键点是**不在这里做类型转换**：清单里声明了每一项的类型，
+ * 真正的转换发生在 resolveConfig（按字段声明逐个转）。
+ * 如果在这里「顺手 coerce 成数字」，布尔项就会被转坏 ——
+ * zod 的 coerce 是在不知道字段类型的前提下瞎猜。
+ */
+const PluginConfigValueSchema = z.union([z.string().max(1024), z.number(), z.boolean()])
+
+export const PluginConfigMapSchema = z.record(
+  z.string().min(1).max(48),
+  PluginConfigValueSchema,
+)
+
+export const UpdatePluginRequestSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    config: PluginConfigMapSchema.optional(),
+  })
+  .refine((v) => v.enabled !== undefined || v.config !== undefined, {
     message: '至少提供一个要更新的字段',
   })

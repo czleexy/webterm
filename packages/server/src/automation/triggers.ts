@@ -42,6 +42,24 @@ export interface TriggerScriptContext {
   matched: string
 }
 
+/** 插件动作的调用参数（阶段 9） */
+export interface TriggerPluginInvocation {
+  pluginId: string
+  actionId: string
+  params?: string
+  ruleId: string
+  ruleName: string
+  line: string
+  matched: string
+}
+
+/** 插件动作的调用结果 */
+export interface TriggerPluginResult {
+  ok: boolean
+  /** 成功时是「已交给哪个插件的哪个动作」，失败时是原因 */
+  message: string
+}
+
 export interface TriggerEngineDeps {
   logger: TriggerEngineLogger
   /** 把文本写回远端（自动应答） */
@@ -60,6 +78,14 @@ export interface TriggerEngineDeps {
   resolveScript: (scriptId: string) => Pick<ScriptDefinition, 'id' | 'name'> | undefined
   /** 提交一次脚本运行 */
   runScript: (script: Pick<ScriptDefinition, 'id' | 'name'>, context: TriggerScriptContext) => void
+  /**
+   * 执行插件注册的动作（阶段 9）。
+   * 可选：未装配插件子系统时，引用插件动作的规则会得到一句明确的失败原因 ——
+   * 这比让它静默什么都不做要好，用户至少知道该去查哪里。
+   *
+   * **必须是同步返回**：这条链路上每输出一行都会经过，等插件等于让插件决定终端吞吐。
+   */
+  runPluginAction?: (input: TriggerPluginInvocation) => TriggerPluginResult
 }
 
 interface CompiledRule {
@@ -256,6 +282,32 @@ export class TriggerEngine {
           compiled.lastError = message
           performed.push(`执行脚本「${script.name}」失败：${message}`)
         }
+        return
+      }
+
+      case 'plugin': {
+        if (!this.deps.runPluginAction) {
+          compiled.lastError = '插件子系统未启用，插件动作无法执行'
+          performed.push('插件子系统未启用，未执行')
+          return
+        }
+        const result = this.deps.runPluginAction({
+          pluginId: action.pluginId,
+          actionId: action.actionId,
+          ...(action.params !== undefined ? { params: action.params } : {}),
+          ruleId: compiled.rule.id,
+          ruleName: compiled.rule.name,
+          line,
+          matched: match[0],
+        })
+        if (!result.ok) {
+          // 与「脚本被删除」同样的处理：把原因写进规则统计，
+          // 界面上这条规则旁边会出现红字，用户知道该去改哪里
+          compiled.lastError = result.message
+          performed.push(`插件动作未执行：${result.message}`)
+          return
+        }
+        performed.push(result.message)
         return
       }
     }

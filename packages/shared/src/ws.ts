@@ -10,6 +10,7 @@
  */
 import type { ConnectionProtocol } from './constants.js'
 import type { ScriptLogLevel, TriggerUiAction } from './automation.js'
+import type { PluginLogLevel } from './plugin.js'
 
 /** 客户端 → 服务端的控制消息 */
 export type ClientControlMessage =
@@ -109,6 +110,74 @@ export type ServerControlMessage =
       error?: string
       at: string
     }
+
+/* ------------------------------------------------------------------ */
+/* 全局事件通道（/ws/events，阶段 9）                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 全局事件通道只跑**低频、不属于任何单个终端**的消息。
+ * 车道上不放终端字节流：那条路已经被终端 WS 的点对点连接占满了。
+ */
+export type ServerEventMessage =
+  /** 插件发起的通知：前端弹 Toast（页面不在前台时按设置转桌面通知） */
+  | {
+      t: 'plugin-notify'
+      pluginId: string
+      pluginName: string
+      title: string
+      body: string
+      /**
+       * 插件自己标注的级别。目前只有 info / warn / error 三种语义 ——
+       * debug 不发通知（那是日志的事），error 在界面上会带红色左边框
+       */
+      level: Exclude<PluginLogLevel, 'debug'>
+      at: string
+    }
+  /** 插件集合发生变化（启停 / 重载 / 文件改动）：前端据此刷新插件列表 */
+  | { t: 'plugins-changed'; reason: 'enabled' | 'disabled' | 'reloaded' | 'discovered' }
+
+/** 运行时校验：把文本帧解析成全局事件消息，非本通道消息返回 null */
+export function parseServerEvent(raw: string): ServerEventMessage | null {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const t = (parsed as { t?: unknown }).t
+    if (t === 'plugins-changed') {
+      const reason = (parsed as { reason?: unknown }).reason
+      if (reason !== 'enabled' && reason !== 'disabled' && reason !== 'reloaded' && reason !== 'discovered') {
+        return null
+      }
+      return { t: 'plugins-changed', reason }
+    }
+    if (t === 'plugin-notify') {
+      const msg = parsed as Partial<Record<string, unknown>>
+      if (
+        typeof msg.pluginId !== 'string' ||
+        typeof msg.pluginName !== 'string' ||
+        typeof msg.title !== 'string' ||
+        typeof msg.body !== 'string' ||
+        typeof msg.at !== 'string'
+      ) {
+        return null
+      }
+      const level = msg.level
+      if (level !== 'info' && level !== 'warn' && level !== 'error') return null
+      return {
+        t: 'plugin-notify',
+        pluginId: msg.pluginId,
+        pluginName: msg.pluginName,
+        title: msg.title,
+        body: msg.body,
+        level,
+        at: msg.at,
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
 
 /** 终端错误码，前端据此给出针对性的提示文案 */
 export type TerminalErrorCode =

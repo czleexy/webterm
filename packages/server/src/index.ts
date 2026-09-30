@@ -27,8 +27,18 @@ async function main(): Promise<void> {
 
   await app.listen({ host: config.host, port: config.port })
 
+  // 非回环监听时每次都提醒一次：这条警告的价值在于「换台机器部署时能立刻看到」，
+  // 只写在文档里没人会去翻。
+  if (!config.isLoopbackHost) {
+    app.log.warn(
+      `正在监听 ${config.host}:${config.port} —— 本服务当前**没有内置访问认证**，` +
+        '同网段任何人都能使用它发起连接。请确保这台机器处在受信任的网络里，' +
+        '或在前面放一层带认证的反向代理。',
+    )
+  }
+
   if (!config.isDev) {
-    app.log.info(`打开浏览器访问 http://${config.host}:${config.port}`)
+    app.log.info(`打开浏览器访问 http://${config.isLoopbackHost ? 'localhost' : config.host}:${config.port}`)
   }
 }
 

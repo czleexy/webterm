@@ -77,6 +77,26 @@ export interface AutomationServiceOptions {
   knownHosts: KnownHostsStore
   sessionResolver: SessionResolver
   logger: AutomationLogger
+  /**
+   * 插件运行时（阶段 9）。只依赖「执行一个插件注册的触发器动作」这一个能力，
+   * 因此这里声明成结构化接口而不是 import PluginRuntime：
+   * 自动化子系统不必知道插件的目录、清单、沙箱是怎么一回事。
+   */
+  plugins?: PluginActionInvoker
+}
+
+/** 自动化子系统眼中「插件」的全部面貌 */
+export interface PluginActionInvoker {
+  invokeTriggerAction(input: {
+    pluginId: string
+    actionId: string
+    params?: string
+    ruleId: string
+    ruleName: string
+    line: string
+    matched: string
+    terminalId: string
+  }): { ok: boolean; message: string }
 }
 
 export interface AttachSessionOptions {
@@ -196,6 +216,12 @@ export class AutomationService {
           triggerContext: context,
         })
       },
+      // 插件动作：把 terminalId 在这里补上（引擎本身不必知道自己在哪个会话里跑）
+      runPluginAction: (input) => {
+        const plugins = this.opts.plugins
+        if (!plugins) return { ok: false, message: '插件子系统未启用' }
+        return plugins.invokeTriggerAction({ ...input, terminalId: session.id })
+      },
     })
     const unsubscribe = session.subscribeOutput((text) => engine.feed(text))
     this.engines.set(session.id, { engine, unsubscribe })
@@ -213,6 +239,15 @@ export class AutomationService {
   detachSession(terminalId: string): void {
     this.uninstallTriggers(terminalId)
     this.sessionIds.delete(terminalId)
+  }
+
+  /**
+   * terminalId → 会话库节点 id。
+   * 插件需要一个「会话属于会话库哪一条记录」的视图，而这份映射天然属于
+   * 自动化子系统（它已经在维护了）；插件不另存一份，避免两处漂移。
+   */
+  sessionIdOf(terminalId: string): string | undefined {
+    return this.sessionIds.get(terminalId)
   }
 
   dispose(): void {

@@ -164,6 +164,13 @@ export interface NotificationSettings {
   onDisconnect: boolean
   onBatchComplete: boolean
   onTriggerHit: boolean
+  /**
+   * 插件通知（阶段 9）。
+   * 单列一项而不是并进 onTriggerHit：插件的通知既可能来自触发器动作，
+   * 也可能来自插件自己的定时检查（心跳失联告警就是后者）。
+   * 用户想「关掉插件唠叨但保留触发器提示」时得有办法表达。
+   */
+  onPluginNotify: boolean
 }
 
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
@@ -172,6 +179,7 @@ export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   onDisconnect: true,
   onBatchComplete: true,
   onTriggerHit: false,
+  onPluginNotify: true,
 }
 
 export type Locale = 'zh-CN' | 'en-US'

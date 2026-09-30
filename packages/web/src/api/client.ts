@@ -24,6 +24,14 @@ import {
   type ListLogFilesResponse,
   type LogPreviewResponse,
   type LoggingSettings,
+  type ListPluginsResponse,
+  type PluginInfo,
+  type PluginLogEntry,
+  type PluginMutationResponse,
+  type PluginPanelData,
+  type PluginPanelResponse,
+  type RunPluginCommandResponse,
+  type UpdatePluginRequest,
   type QueryAuditResponse,
   type LogFileInfo,
   type AuditEntry,
@@ -449,6 +457,42 @@ export function logFileDownloadUrl(id: string): string {
   return `${API_PREFIX}/logs/files/${encodeURIComponent(id)}/download`
 }
 
+/* ------------------------------------------------------------------ */
+/* 阶段 9：插件                                                         */
+/* ------------------------------------------------------------------ */
+
+export function listPlugins(): Promise<ListPluginsResponse> {
+  return request<ListPluginsResponse>('/plugins')
+}
+
+export function rescanPlugins(): Promise<ListPluginsResponse> {
+  return request<ListPluginsResponse>('/plugins/rescan', { method: 'POST' })
+}
+
+export function updatePlugin(id: string, patch: UpdatePluginRequest): Promise<PluginMutationResponse> {
+  return request<PluginMutationResponse>(`/plugins/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+export function reloadPlugin(id: string): Promise<PluginMutationResponse> {
+  return request<PluginMutationResponse>(`/plugins/${encodeURIComponent(id)}/reload`, { method: 'POST' })
+}
+
+export function runPluginCommand(id: string, commandId: string): Promise<RunPluginCommandResponse> {
+  return request<RunPluginCommandResponse>(
+    `/plugins/${encodeURIComponent(id)}/commands/${encodeURIComponent(commandId)}`,
+    { method: 'POST' },
+  )
+}
+
+export function fetchPluginPanel(id: string, panelId: string): Promise<PluginPanelResponse> {
+  return request<PluginPanelResponse>(
+    `/plugins/${encodeURIComponent(id)}/panels/${encodeURIComponent(panelId)}`,
+  )
+}
+
 export function queryAudit(params?: {
   event?: string
   from?: string
@@ -504,4 +548,8 @@ export type {
   QueryAuditResponse,
   RedactionRule,
   SessionLogSettings,
+  ListPluginsResponse,
+  PluginInfo,
+  PluginLogEntry,
+  PluginPanelData,
 }

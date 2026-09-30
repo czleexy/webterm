@@ -15,6 +15,16 @@ export const WS_PATH = '/ws'
 /** SFTP WebSocket 端点：/ws/sftp/:sftpId */
 export const WS_SFTP_PATH = `${WS_PATH}/sftp`
 
+/**
+ * 全局事件通道端点：/ws/events（阶段 9）。
+ *
+ * 与终端 WS 的区别：终端 WS 是**点对点**的（一条连接对一个终端，二进制帧跑数据），
+ * 这里是**广播**的（一个页面一条连接，只跑低频 JSON 事件）。
+ * 插件通知、插件列表变更这类「不属于任何单个终端」的消息走这里 ——
+ * 挂在终端 WS 上会有一个尴尬的后果：没开终端就看不了通知。
+ */
+export const WS_EVENTS_PATH = `${WS_PATH}/events`
+
 /** 服务端默认监听端口 */
 export const DEFAULT_SERVER_PORT = 8080
 

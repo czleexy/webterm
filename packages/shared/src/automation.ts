@@ -90,12 +90,53 @@ export interface TriggerScriptAction {
   scriptId: string
 }
 
+/**
+ * 插件动作（阶段 9）：把命中的行交给插件注册的动作处理器。
+ *
+ * 三个字段各司其职，缺一不可：
+ * - `pluginId` + `actionId` 才是**真正的引用**。不拼成一个 `plugin:xxx:yyy`
+ *   字符串，是为了插件被停用/卸载后，规则能明确报出「引用的插件动作已不存在」，
+ *   而不是留下一个看不懂所以然的长 id。
+ * - `label` 是**选定时的快照**，只用于列表与摘要展示 —— 规则列表要在不拉取
+ *   插件注册表的情况下也能渲染出人话。插件改名后以插件为准，这里允许过期。
+ */
+export interface TriggerPluginAction {
+  type: 'plugin'
+  pluginId: string
+  actionId: string
+  /** 选定时的动作名快照（展示用，可为空） */
+  label?: string
+  /** 传给插件的额外参数，原样字符串；语义由插件定义 */
+  params?: string
+}
+
 export type TriggerAction =
   | TriggerSendAction
   | TriggerHighlightAction
   | TriggerNotifyAction
   | TriggerLabelAction
   | TriggerScriptAction
+  | TriggerPluginAction
+
+/**
+ * 全部动作类型。
+ *
+ * 这份清单是**落库后读回时的白名单**：库里的 `actions_json` 是 JSON 文本，
+ * 反序列化时必须逐个判别类型，认不出来的就丢掉（手工改过库、历史版本写坏的
+ * 内容都不该让接口 500）。新增动作类型时忘了加到这里的后果很隐蔽 ——
+ * 规则能存进去、接口也能查出来，只有运行时「这条规则什么都不做」，
+ * 而且不报任何错。所以判别必须用这一个常量，而不是各处再手抄一份数组。
+ */
+export const TRIGGER_ACTION_TYPES = [
+  'send',
+  'highlight',
+  'notify',
+  'label',
+  'script',
+  'plugin',
+] as const
+
+export type TriggerActionType = (typeof TRIGGER_ACTION_TYPES)[number]
 
 /** 需要推给前端才能完成的那部分动作（其余在服务端就地执行） */
 export type TriggerUiAction =
@@ -532,6 +573,9 @@ export function describeTriggerAction(action: TriggerAction): string {
       return `记录标签「${action.label}」`
     case 'script':
       return `执行脚本 ${action.scriptId}`
+    case 'plugin':
+      // 优先用快照名；没有就退回 pluginId:actionId —— 至少能看出是哪个插件的哪个动作
+      return `插件动作：${action.label ?? `${action.pluginId}:${action.actionId}`}`
   }
 }
 

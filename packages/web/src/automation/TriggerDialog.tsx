@@ -36,6 +36,7 @@ import {
 import { testTrigger } from '../api/client'
 import { useLibraryStore } from '../store/useLibraryStore'
 import { useAutomationStore } from '../store/useAutomationStore'
+import { usePluginStore } from '../store/usePluginStore'
 import {
   Chip,
   hintClass,
@@ -106,6 +107,7 @@ export function TriggerDialog({ editing, onClose, onSaved }: TriggerDialogProps)
   const nodes = useLibraryStore((s) => s.nodes)
   const scripts = useAutomationStore((s) => s.scripts)
   const capabilities = useAutomationStore((s) => s.capabilities)
+  const plugins = usePluginStore((s) => s.plugins)
 
   const [form, setForm] = useState<FormState>(() => formOf(editing))
   const [sample, setSample] = useState('')
@@ -125,6 +127,30 @@ export function TriggerDialog({ editing, onClose, onSaved }: TriggerDialogProps)
   )
 
   const flagChars = capabilities?.supportedTriggerFlagChars ?? ['i', 'm', 's', 'u']
+
+  /**
+   * 插件注册的触发器动作（阶段 9）。
+   *
+   * 只取 `state === 'ready'` 的插件：加载失败或已停用的插件注册项在服务端
+   * 就已经是空的了，这里再过滤一次是为了不把「上一秒的旧快照」渲染进下拉 ——
+   * 让用户选到一个选了也执行不了的动作，是最坏的一种「假可选」。
+   */
+  const pluginActions = useMemo(
+    () =>
+      plugins
+        .filter((p) => p.state === 'ready')
+        .flatMap((p) =>
+          p.triggerActions.map((action) => ({
+            pluginId: p.id,
+            pluginName: p.name,
+            actionId: action.id,
+            label: action.label,
+            description: action.description,
+          })),
+        ),
+    [plugins],
+  )
+  const pluginActionKey = (pluginId: string, actionId: string) => `${pluginId}::${actionId}`
 
   const patternError = localPatternError(form.matchMode, form.pattern, form.flags)
 
@@ -147,6 +173,9 @@ export function TriggerDialog({ editing, onClose, onSaved }: TriggerDialogProps)
 
   const addAction = (type: TriggerAction['type']) => {
     if (form.actions.length >= TRIGGER_MAX_ACTIONS) return
+    // 插件动作要带「是哪个插件的哪个动作」：默认取第一个可用的，
+    // 让用户先看到一条完整的动作再改，比让他面对一个空的三个下拉好
+    const firstPluginAction = pluginActions[0]
     const fresh: TriggerAction =
       type === 'send'
         ? { type: 'send', text: '' }
@@ -156,7 +185,14 @@ export function TriggerDialog({ editing, onClose, onSaved }: TriggerDialogProps)
             ? { type: 'notify', title: '', body: '' }
             : type === 'label'
               ? { type: 'label', label: '' }
-              : { type: 'script', scriptId: scripts[0]?.id ?? '' }
+              : type === 'plugin'
+                ? {
+                    type: 'plugin',
+                    pluginId: firstPluginAction?.pluginId ?? '',
+                    actionId: firstPluginAction?.actionId ?? '',
+                    ...(firstPluginAction ? { label: firstPluginAction.label } : {}),
+                  }
+                : { type: 'script', scriptId: scripts[0]?.id ?? '' }
     setForm((prev) => ({ ...prev, actions: [...prev.actions, fresh] }))
   }
 
@@ -396,13 +432,22 @@ export function TriggerDialog({ editing, onClose, onSaved }: TriggerDialogProps)
             <div className="mb-2 flex items-center justify-between">
               <label className={labelClass}>命中后执行的动作</label>
               <div className="flex items-center gap-1">
-                {(['send', 'highlight', 'notify', 'label', 'script'] as const).map((type) => (
+                {(['send', 'highlight', 'notify', 'label', 'script', 'plugin'] as const).map((type) => (
                   <button
                     key={type}
                     type="button"
                     data-testid={`trigger-add-action-${type}`}
                     onClick={() => addAction(type)}
-                    disabled={form.actions.length >= TRIGGER_MAX_ACTIONS}
+                    disabled={
+                      form.actions.length >= TRIGGER_MAX_ACTIONS ||
+                      // 没有任何插件注册动作时不给点：点了只会多出一个空动作
+                      (type === 'plugin' && pluginActions.length === 0)
+                    }
+                    title={
+                      type === 'plugin' && pluginActions.length === 0
+                        ? '当前没有已加载的插件注册触发器动作（可在顶栏「插件」里查看）'
+                        : undefined
+                    }
                     className={secondaryButtonClass}
                   >
                     + {ACTION_LABEL[type]}
@@ -559,6 +604,70 @@ export function TriggerDialog({ editing, onClose, onSaved }: TriggerDialogProps)
                         )}
                       </div>
                     ) : null}
+
+                    {action.type === 'plugin' ? (
+                      <div className="space-y-2">
+                        <select
+                          data-testid={`trigger-action-plugin-${index}`}
+                          className={inputClass}
+                          value={
+                            pluginActions.some(
+                              (o) =>
+                                o.pluginId === action.pluginId && o.actionId === action.actionId,
+                            )
+                              ? pluginActionKey(action.pluginId, action.actionId)
+                              : ''
+                          }
+                          onChange={(e) => {
+                            const picked = pluginActions.find(
+                              (o) => pluginActionKey(o.pluginId, o.actionId) === e.target.value,
+                            )
+                            if (!picked) return
+                            patchAction(index, {
+                              pluginId: picked.pluginId,
+                              actionId: picked.actionId,
+                              label: picked.label,
+                            })
+                          }}
+                        >
+                          <option value="">请选择插件动作…</option>
+                          {pluginActions.map((option) => (
+                            <option
+                              key={pluginActionKey(option.pluginId, option.actionId)}
+                              value={pluginActionKey(option.pluginId, option.actionId)}
+                            >
+                              {option.pluginName} · {option.label}
+                            </option>
+                          ))}
+                        </select>
+
+                        {/* 动作指向的插件被卸载 / 停用时，必须当场说清楚，而不是等命中才发现 */}
+                        {action.pluginId !== '' &&
+                        !pluginActions.some(
+                          (o) => o.pluginId === action.pluginId && o.actionId === action.actionId,
+                        ) ? (
+                          <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                            引用的插件动作当前不可用（插件「{action.pluginId}」可能已停用、卸载或更新）。
+                            规则仍可保存，命中时会记录失败原因。
+                          </p>
+                        ) : null}
+
+                        <input
+                          data-testid={`trigger-action-plugin-params-${index}`}
+                          className={monoInputClass}
+                          value={action.params ?? ''}
+                          onChange={(e) => patchAction(index, { params: e.target.value })}
+                          placeholder="可选：传给插件的参数（原样字符串，语义由插件定义）"
+                        />
+
+                        <p className={hintClass}>
+                          {pluginActions.find(
+                            (o) => o.pluginId === action.pluginId && o.actionId === action.actionId,
+                          )?.description ??
+                            '插件动作在服务端执行；插件内部的失败会记进插件日志并发出通知，不会影响终端输出。'}
+                        </p>
+                      </div>
+                    ) : null}
                   </li>
                 ))}
               </ul>
@@ -678,4 +787,5 @@ const ACTION_LABEL: Record<TriggerAction['type'], string> = {
   notify: '通知',
   label: '标签',
   script: '脚本',
+  plugin: '插件动作',
 }

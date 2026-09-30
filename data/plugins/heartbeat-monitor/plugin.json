@@ -1,0 +1,58 @@
+{
+  "id": "heartbeat-monitor",
+  "name": "心跳监视器",
+  "version": "1.0.0",
+  "description": "定时向已连接的会话发送心跳命令，长时间收不到回应时告警。同时提供一个把会话标记为存活的触发器动作。",
+  "author": "WebTerm 示例",
+  "apiVersion": 1,
+  "main": "index.js",
+  "permissions": ["session:read", "session:write", "notify"],
+  "config": [
+    {
+      "key": "intervalMs",
+      "label": "检查间隔（毫秒）",
+      "type": "number",
+      "default": 60000,
+      "min": 5000,
+      "max": 3600000,
+      "description": "每隔多久检查一次各会话的心跳状态"
+    },
+    {
+      "key": "timeoutMs",
+      "label": "静默判定阈值（毫秒）",
+      "type": "number",
+      "default": 180000,
+      "min": 10000,
+      "max": 86400000,
+      "description": "超过这个时长没收到心跳回应，就补发一次心跳并计一次未回应"
+    },
+    {
+      "key": "heartbeatCommand",
+      "label": "心跳命令",
+      "type": "string",
+      "default": "echo HEARTBEAT-OK",
+      "description": "补发的心跳命令；插件会自动补一个回车"
+    },
+    {
+      "key": "responseMarker",
+      "label": "心跳回显标记",
+      "type": "string",
+      "default": "HEARTBEAT-OK",
+      "description": "输出里出现这个字符串即视为收到回应"
+    },
+    {
+      "key": "failureThreshold",
+      "label": "连续未回应告警阈值",
+      "type": "number",
+      "default": 3,
+      "min": 1,
+      "max": 100
+    },
+    {
+      "key": "notifyOnRecover",
+      "label": "恢复时也通知",
+      "type": "boolean",
+      "default": true
+    }
+  ]
+}

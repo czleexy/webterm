@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import Fastify, { type FastifyInstance } from 'fastify'
 import fastifyStatic from '@fastify/static'
@@ -18,8 +19,10 @@ import { tunnelRoutes } from './api/rest/tunnels.js'
 import { automationRoutes } from './api/rest/automation.js'
 import { logRoutes } from './api/rest/logs.js'
 import { auditRoutes } from './api/rest/audit.js'
+import { pluginRoutes } from './api/rest/plugins.js'
 import { terminalWsRoutes } from './api/ws/terminal.js'
 import { sftpWsRoutes } from './api/ws/sftp.js'
+import { eventWsRoutes } from './api/ws/events.js'
 import { KnownHostsStore } from './ssh/known-hosts.js'
 import { TerminalManager } from './terminal/terminal-manager.js'
 import { Vault } from './security/vault.js'
@@ -27,13 +30,34 @@ import { CredentialStore } from './security/credential-store.js'
 import { LibraryStore } from './db/library.js'
 import { AutomationStore } from './db/automation.js'
 import { LoggingStore } from './db/logging.js'
+import { PluginStore } from './db/plugins.js'
 import { openDatabase } from './db/index.js'
 import { SessionResolver } from './api/resolver.js'
 import { SftpManager } from './sftp/sftp-manager.js'
 import { AutomationService } from './automation/automation-service.js'
 import { LoggingService } from './logging/logging-service.js'
+import { EventHub } from './events/hub.js'
+import { PluginRuntime } from './plugin/plugin-runtime.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
+
+/**
+ * 探测一个包能否被解析到。
+ *
+ * 用途只有一个：`pino-pretty` 是 devDependency，发布形态（便携目录 / Docker 镜像）
+ * 里装的是生产依赖，它并不存在。而 pino 的 `transport.target` 是运行时按字符串
+ * 解析的 —— 解析不到会直接抛 ERR_MODULE_NOT_FOUND 把进程带走。日志排版好不好看
+ * 远比进程能不能起来次要，所以这里先探再决定，拿不到就退回 JSON 日志。
+ */
+const resolveFrom = createRequire(import.meta.url)
+function canResolve(specifier: string): boolean {
+  try {
+    resolveFrom.resolve(specifier)
+    return true
+  } catch {
+    return false
+  }
+}
 
 // 让各路由插件能通过 app.terminals / app.vault 等访问共享状态，
 // 避免把依赖一层层往下传参
@@ -51,6 +75,10 @@ declare module 'fastify' {
     automation: AutomationService
     /** 阶段 7：日志与审计 */
     logging: LoggingService
+    /** 阶段 9：全局事件通道（插件通知等广播消息） */
+    events: EventHub
+    /** 阶段 9：插件运行时 */
+    plugins: PluginRuntime
   }
 }
 
@@ -66,19 +94,20 @@ export interface BuiltApp {
  */
 export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   const app = Fastify({
-    logger: config.isDev
-      ? {
-          level: config.logLevel,
-          transport: {
-            target: 'pino-pretty',
-            options: {
-              translateTime: 'HH:MM:ss',
-              ignore: 'pid,hostname',
-              messageFormat: '{msg}',
+    logger:
+      config.isDev && canResolve('pino-pretty')
+        ? {
+            level: config.logLevel,
+            transport: {
+              target: 'pino-pretty',
+              options: {
+                translateTime: 'HH:MM:ss',
+                ignore: 'pid,hostname',
+                messageFormat: '{msg}',
+              },
             },
-          },
-        }
-      : { level: config.logLevel },
+          }
+        : { level: config.logLevel },
     trustProxy: false,
     // 终端上行是二进制帧，单帧最大 1 MiB 足够（粘贴大段文本时的上限）
     bodyLimit: 1024 * 1024,
@@ -113,13 +142,36 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
 
   // 阶段 6：自动化（触发器 / 宏 / 脚本 / 批量执行）
   const automationStore = new AutomationStore(db)
-  const automation = new AutomationService({
+
+  // 阶段 9：插件。
+  //
+  // 这里有个先有鸡还是先有蛋：插件要知道「会话属于会话库哪一条」（这份映射
+  // 由自动化子系统维护），而自动化子系统要把插件运行时接进触发器引擎。
+  // 用「先声明类型、后赋值」把环打开 —— 两边的回调都只在实际调用时才解引用，
+  // 那时两者都已就绪。给 automation 显式标注类型是必须的，否则 TS 会因为
+  // 互相推断而把它判成 any。
+  let automation: AutomationService
+
+  // 事件通道先建出来：插件在加载期就可能发通知，那时 hub 必须已经能广播
+  const events = new EventHub()
+  const pluginStore = new PluginStore(db)
+  const plugins: PluginRuntime = new PluginRuntime({
+    dir: config.pluginDir,
+    store: pluginStore,
+    hub: events,
+    terminals,
+    logger: app.log,
+    resolveSessionId: (terminalId) => automation.sessionIdOf(terminalId),
+  })
+
+  automation = new AutomationService({
     store: automationStore,
     library,
     terminals,
     knownHosts,
     sessionResolver,
     logger: app.log,
+    plugins,
   })
 
   // 阶段 7：日志与审计。审计落 SQLite，日志文件按会话分流到 config.logDir
@@ -142,9 +194,19 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   app.decorate('automationStore', automationStore)
   app.decorate('automation', automation)
   app.decorate('logging', logging)
+  app.decorate('events', events)
+  app.decorate('plugins', plugins)
+
+  // 插件在会话事件钩子装配完成后加载（init 内部先登记钩子再扫描目录），
+  // 这样「插件加载时正好有个会话刚建好」也不会漏掉事件
+  plugins.init()
+
   // 进程退出时统一关闭所有 SSH 连接，避免留下悬挂会话占用远端 VTY；
   // 保险库清零内存密钥，数据库正常关闭（WAL checkpoint）
   app.addHook('onClose', async () => {
+    // 插件先于终端释放：它的清理逻辑可能会用到会话列表与 sendToRemote
+    plugins.dispose()
+    events.dispose()
     logging.dispose()
     automation.dispose()
     sftp.dispose()
@@ -172,12 +234,16 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   await app.register(automationRoutes, { prefix: API_PREFIX })
   await app.register(logRoutes, { prefix: API_PREFIX })
   await app.register(auditRoutes, { prefix: API_PREFIX })
+  await app.register(pluginRoutes, { prefix: API_PREFIX })
   await app.register(sftpRoutes, { prefix: API_PREFIX })
   await app.register(terminalWsRoutes, { prefix: WS_PATH })
   await app.register(sftpWsRoutes, { prefix: WS_SFTP_PATH })
+  await app.register(eventWsRoutes, { prefix: WS_PATH })
 
-  // dist 相对本文件定位：src/app.ts -> ../../web/dist，dist/app.js -> ../../web/dist
-  const webDist = path.resolve(here, '../../web/dist')
+  // 发布形态（npm 包 / 便携目录 / Docker 镜像）的目录结构由打包脚本决定，
+  // 兜底的相对推断只适用于源码仓库，所以显式配置优先。
+  // 相对推断：src/app.ts -> ../../web/dist，dist/app.js -> ../../web/dist
+  const webDist = config.webDir ?? path.resolve(here, '../../web/dist')
   // 仅生产模式托管静态产物：开发态由 Vite 提供前端，避免误访问到过期的构建结果
   const serveWeb = !config.isDev && existsSync(path.join(webDist, 'index.html'))
 

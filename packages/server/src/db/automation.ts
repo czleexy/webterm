@@ -28,6 +28,7 @@ import {
   SCRIPT_DEFAULT_TIMEOUT_MS,
   SCRIPT_MAX_CODE_BYTES,
   SCRIPT_MAX_TIMEOUT_MS,
+  TRIGGER_ACTION_TYPES,
   TRIGGER_DEFAULT_COOLDOWN_MS,
   TRIGGER_MAX_ACTIONS,
   TRIGGER_MAX_COOLDOWN_MS,
@@ -37,7 +38,7 @@ import {
 } from '@webterm/shared'
 import { newId, nowIso, type MacroRow, type ScriptRow, type TriggerRow } from './index.js'
 
-const ACTION_TYPES = new Set(['send', 'highlight', 'notify', 'label', 'script'])
+const ACTION_TYPES = new Set<string>(TRIGGER_ACTION_TYPES)
 
 function isTriggerAction(value: unknown): value is TriggerAction {
   if (typeof value !== 'object' || value === null) return false

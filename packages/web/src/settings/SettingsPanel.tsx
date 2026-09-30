@@ -695,6 +695,12 @@ function NotificationsTab() {
           checked={notifications.onTriggerHit}
           onChange={(value) => setNotifications({ onTriggerHit: value })}
         />
+        <Toggle
+          testId="notify-plugin"
+          label={t('settings.notify.onPlugin')}
+          checked={notifications.onPluginNotify}
+          onChange={(value) => setNotifications({ onPluginNotify: value })}
+        />
       </div>
     </div>
   )

@@ -11,6 +11,9 @@ import { SessionDialog } from './components/SessionDialog'
 import { TunnelPanel } from './components/TunnelPanel'
 import { AutomationPanel } from './components/AutomationPanel'
 import { LogsPanel } from './logs/LogsPanel'
+import { PluginsPanel } from './plugins/PluginsPanel'
+import { useEventChannel } from './plugins/useEventChannel'
+import { usePluginStore } from './store/usePluginStore'
 import { BroadcastBar, BroadcastPanel } from './automation/BroadcastPanel'
 import { VaultGate } from './components/VaultGate'
 import { useHealth } from './hooks/useHealth'
@@ -92,10 +95,18 @@ export default function App() {
   const ratioY = useLayoutStore((s) => s.ratioY)
   const setSettingsOpen = useSettingsStore((s) => s.setPanelOpen)
 
+  /* ---------------- 阶段 9：插件 ---------------- */
+
+  const plugins = usePluginStore((s) => s.plugins)
+  const refreshPlugins = usePluginStore((s) => s.refresh)
+  // 加载失败的插件数：入口上给个红点，否则「插件没生效」只能靠用户自己去翻面板
+  const pluginErrorCount = plugins.filter((p) => p.state === 'error').length
+
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickMode, setQuickMode] = useState<ConnectMode>('terminal')
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
+  const [pluginsOpen, setPluginsOpen] = useState(false)
   /** 窄屏下会话树折叠成抽屉（桌面端始终展开，这个状态无用） */
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [mobileNoticeClosed, setMobileNoticeClosed] = useState(false)
@@ -123,6 +134,12 @@ export default function App() {
   useEffect(() => {
     void useVaultStore.getState().refresh()
   }, [])
+
+  // 插件与保险库无关（它们住在服务端文件系统里），所以不等解锁就先拉一次：
+  // 未解锁时顶栏也要能显示「有插件加载失败」这个事实
+  useEffect(() => {
+    void refreshPlugins()
+  }, [refreshPlugins])
 
   // 保险库解锁状态变化时刷新会话库与凭据
   useEffect(() => {
@@ -470,16 +487,26 @@ export default function App() {
     'open-tunnels': () => openTunnels(),
   })
 
+  // 全局事件通道：插件通知与插件列表变更。放在门禁之前 ——
+  // 插件住在服务端文件系统里，与保险库解锁无关，锁着的时候也该能看到通知
+  useEventChannel()
+
   // 保险库未就绪 / 未解锁时，整个应用被门禁挡住
   if (!vaultUnlocked) {
     return (
       <div className="h-full bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
-        <AppHeader status={health.status} serverVersion={health.data?.version} />
+        <AppHeader
+          status={health.status}
+          serverVersion={health.data?.version}
+          onOpenPlugins={() => setPluginsOpen(true)}
+          pluginErrorCount={pluginErrorCount}
+        />
         <div className="h-[calc(100%-2.25rem)]">
           <VaultGate>{null}</VaultGate>
         </div>
         <ToastHost />
         <SettingsPanel />
+        <PluginsPanel open={pluginsOpen} onClose={() => setPluginsOpen(false)} />
       </div>
     )
   }
@@ -517,6 +544,8 @@ export default function App() {
         broadcastOn={broadcastEnabled}
         onOpenLogs={() => setLogsOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenPlugins={() => setPluginsOpen(true)}
+        pluginErrorCount={pluginErrorCount}
         layoutMode={layoutMode}
         onLayoutChange={applyLayout}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -712,6 +741,7 @@ export default function App() {
       <TunnelPanel />
       <AutomationPanel />
       <LogsPanel open={logsOpen} onClose={() => setLogsOpen(false)} />
+      <PluginsPanel open={pluginsOpen} onClose={() => setPluginsOpen(false)} />
       <BroadcastPanel />
       <SettingsPanel />
       <ToastHost />

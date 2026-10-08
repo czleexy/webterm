@@ -24,13 +24,14 @@ on:
   push:
     branches: ['main']
     tags: ['v*']
-    # 文档与测试脚手架的改动不影响镜像内容，不必为它们跑一遍构建。
+    # 文档、测试脚手架与工作区记忆的改动不影响镜像内容，不必为它们跑一遍构建。
     # 注意 data/tmp 之外的 data/ 不能忽略：data/plugins 是要打进镜像的示例插件。
     # （路径过滤对 tag 推送不生效，见 GitHub 文档 —— 所以打 v* 标签一定会构建。）
     paths-ignore:
       - 'docs/**'
       - '*.md'
       - 'data/tmp/**'
+      - '.workbuddy/**'
   pull_request:
     branches: ['main']
   workflow_dispatch:
@@ -70,6 +71,13 @@ jobs:
           echo "image=${image}" >> "$GITHUB_OUTPUT"
           echo "ref=${image}:sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
           echo "本次镜像：${image}"
+
+      # 用于覆盖 metadata-action 自动填的 version。
+      # 分支构建时它会把 version 填成分支名（`main`）—— 那描述的是「构建来源」而不是
+      # 「这是什么版本」，照抄进 labels 会误导人。镜像内容对应的就是仓库里的版本号。
+      - name: 读取 package.json 版本
+        id: ver
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: 决定目标平台
         id: platforms
@@ -117,6 +125,11 @@ jobs:
             type=sha,format=long,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
+      # 要把 metadata-action 的自动标签和手工覆盖混在一起写。
+      # 必须覆盖的原因：自动值里 licenses 是空的（没有 LICENSE 文件时就填空），
+      # 而 Dockerfile 里明明声明了 MIT —— 直接透传会把那条声明盖掉；
+      # description 会被填成 GitHub 仓库简介（一句话），比 Dockerfile 里的说明还简陋。
+      # 后面的同名字段覆盖前面的（build-push-action 的 labels 是后写胜）。
       - name: 构建并推送
         id: build
         uses: docker/build-push-action@v6
@@ -126,7 +139,12 @@ jobs:
           platforms: ${{ steps.platforms.outputs.value }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.title=WebTerm
+            org.opencontainers.image.description=浏览器里的 SSH / Telnet 终端（对标 SecureCRT）
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.ver.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false

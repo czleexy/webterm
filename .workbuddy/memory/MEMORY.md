@@ -32,6 +32,8 @@ export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2
 - ⚠️ **Python `subprocess` 的 `text=True` 在 Windows 上会把 `\n` 翻成 `\r\n`**。拿脚本去喂 bash 时必须传 bytes，否则得到一串假的 `$'\r'` 语法错
 - ⚠️ **脚本自清 scratch 目录会撞「单轮删除 > 50 文件」保护**（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`）。**别再用 `env -u CODEBUDDY_SAFE_DELETE_BULK_*` 放行 —— 已失效且有害，会让 node 静默退出（exit 0、无输出、1~3 秒死）**。做法：运行前先清残留目录，或换一个新的 WORK 目录名
 - ⚠️ 根 `npm run build` 偶发 rolldown 报错而单包构建正常 → 沙箱写入竞态，重跑即可
+- ⚠️ **带多行参数的 bash 命令可能被执行两次**：症状是 `git commit` 那一步打印「nothing to commit」或「could not read log file」（因为第一次执行已经提交并删掉了消息文件），退出码 1，**但改动其实已经提交**。判断真实状态要看 `git log` / `git status`，别只看退出码。规避：提交消息写进文件用 `-F`，或让命令幂等（`git commit || true`、把 `git push` 单独一条）
+- ⚠️ **网络会分主机抖动**：本轮 `github.com` 直连超时，而 `api.github.com` / `ghcr.io` / shields.io 同时正常。查公开仓库状态时准备多条通道
 
 **行尾**：`core.autocrlf=true`，**blob 一律 LF**（磁盘上是 CRLF 只是检出形态）。`.gitattributes` 已把 `*.yml/*.yaml` 固定 `eol=lf`（CI 的 `run:` 脚本是原样丢给 Linux bash 的，CRLF 会报看不出根因的错）。
 

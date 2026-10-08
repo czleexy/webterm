@@ -41,6 +41,15 @@
 - 阶段 9 验收清单第 2 条（`docker run -p 8080:8080 webterm` 可访问）**至此有实测证据**：
   commit `9f6f0a8` 的构建两个作业全绿；外部匿名探测确认可 pull、`linux/amd64`、非 root、
   暴露 8080、带 `HEALTHCHECK`、97.9 MB（压缩后）
+- 已打标签 `v0.2.0`，产出 `0.2.0` / `0.2` 的**多架构**镜像（`linux/amd64` + `linux/arm64`）。
+  该标签之后的应用代码与阶段 9 收口提交 `cd5298e` 完全一致（其后提交只涉及 CI、文档与仓库配置）
+- 可用的镜像引用：
+
+  ```bash
+  docker run -p 8080:8080 ghcr.io/czleexy/webterm:0.2.0     # 钉住版本（多架构）
+  docker run -p 8080:8080 ghcr.io/czleexy/webterm:latest    # 跟随默认分支
+  docker run -p 8080:8080 ghcr.io/czleexy/webterm:sha-e86d74e01b26a94d9363c10a4063c07a2fdd28e4
+  ```
 
 ---
 

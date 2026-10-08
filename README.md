@@ -96,18 +96,25 @@ webterm [选项]
 docker run -p 8080:8080 ghcr.io/czleexy/webterm:latest      # 打开 http://localhost:8080
 ```
 
-镜像由 [`.github/workflows/docker-image.yml`](.github/workflows/docker-image.yml) 在每次推送到 `main` 时构建并发布到 GitHub Container Registry，标签：
+镜像由 [`.github/workflows/docker-image.yml`](.github/workflows/docker-image.yml) 在推送到 `main`、打 `v*` 标签或手动触发时构建，发布到 GitHub Container Registry。当前已有的标签：
 
-| 标签 | 什么时候更新 |
-| --- | --- |
-| `latest` | 默认分支的每次推送 |
-| `main` | 同上，与 `latest` 指向同一层 |
-| `sha-<commit>` | 每次构建唯一，用于回滚或锁定某个提交 |
-| `1.2.3` / `1.2` | 打 `v1.2.3` 这样的标签时 |
+| 标签 | 平台 | 来源 |
+| --- | --- | --- |
+| `latest` / `main` | `amd64` / `amd64`+`arm64` | 默认分支推送 / 版本标签 |
+| `0.2.0` / `0.2` | `amd64` + `arm64` | 标签 `v0.2.0` |
+| `sha-<完整 commit>` | 同该次构建 | 每次构建唯一，用于回滚或锁定某个提交 |
+
+> 注意 `latest` 会**跟着最近一次构建变**：打 `v*` 标签时它也会被刷成多架构索引。要用稳定的版本请显式写 `0.2.0`，要精确到提交请用 `sha-<commit>`。
 
 CI 除了构建，还会**真的把镜像跑起来验一遍**：`docker run -p 8080:8080` → 等 `/api/health` → 断言首页是 `text/html` 且含 `id="root"` → 比对镜像内版本与 `package.json`。所以「镜像能跑」这件事有构建记录可查，不靠人工。
 
-第一次构建（commit `9f6f0a8`）实测：两个作业全绿，镜像 `linux/amd64`、97.9 MB（压缩后）、以非 root 用户 `node` 运行、带 `HEALTHCHECK`，匿名 `docker pull` 可用（包已随 `org.opencontainers.image.source` 标签关联到本仓库）。
+实测（2026-10-08）：
+
+- 分支构建（`e86d74e`）与标签构建（`v0.2.0`）**两个作业都全绿**，冒烟作业真的把容器跑起来并通过了断言
+- 从 GHCR **匿名**拉取可用（包随 `org.opencontainers.image.source` 标签关联到本仓库，继承公开可见性）
+- 镜像以非 root 用户 `node` 运行、暴露 `8080/tcp`、带 `HEALTHCHECK`、约 98 MB（压缩后）
+- 元数据：`licenses=MIT`、`version=0.2.0`、`revision=<构建时的 commit>`
+- 多架构索引里**没有** `unknown/unknown` 平台条目（`provenance: false` 的效果）
 
 > 如果哪天把包改成了私有，匿名拉取会变成 401。此时要么登录后再拉：
 > ```bash
@@ -115,7 +122,7 @@ CI 除了构建，还会**真的把镜像跑起来验一遍**：`docker run -p 8
 > ```
 > 要么去 `https://github.com/users/czleexy/packages/container/webterm/settings` → Danger Zone → Change visibility 改回 Public。
 >
-> 常规推送只构建 `linux/amd64`；需要 `linux/arm64`（Apple Silicon、ARM 服务器）请打 `v*` 标签，或在 Actions 页手动触发（`platforms` 输入默认就是 `linux/amd64,linux/arm64`）。
+> **平台策略**：常规推送只构建 `linux/amd64`（arm64 要走 QEMU 模拟，而这个项目里有 better-sqlite3、rolldown、oxide 等原生模块，模拟下会慢好几倍）；打 `v*` 标签或在 Actions 页手动触发时构建 `linux/amd64,linux/arm64`（`platforms` 输入可改）。
 
 **或者自己构建**：
 

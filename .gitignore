@@ -33,6 +33,16 @@ dist/
 !/data/tmp/e2e-browser-plugin.mjs
 !/data/tmp/probe-release.mjs
 !/data/tmp/probe-plugins.mjs
+# 阶段 9 之后：容器镜像由 CI 构建，这几个脚本用来在本地校验工作流、盯构建、从 GHCR
+# 外部核对镜像。docs/03-测试指南.md 与 README 按路径引用了它们。
+!/data/tmp/check-workflow.py
+!/data/tmp/watch-run.mjs
+!/data/tmp/wait-ghcr.mjs
+!/data/tmp/wait-ghcr-tag.mjs
+!/data/tmp/probe-ghcr.mjs
+!/data/tmp/probe-tags.mjs
+!/data/tmp/probe-status.mjs
+!/data/tmp/probe-shields.mjs
 
 # 示例插件随仓库分发：它是插件机制的参考实现，也是「把目录放进去就能用」的示范。
 # 目录必须先放行，否则 git 不会下探，里面的 ! 规则全部无效。

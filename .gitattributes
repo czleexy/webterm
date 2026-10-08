@@ -1,0 +1,11 @@
+# 工作流与编排文件必须始终以 LF 入库。
+#
+# 起因：CI 里的 `run:` 脚本是被原样丢给 Linux 上的 bash 执行的。如果工作流文件
+# 带 CRLF 入了库，bash 会报 `$'\r': command not found` 或「unexpected end of file」
+# 这类**看不出根因**的错（错误行号还会指到无关的行上）。
+#
+# 本地之所以不一定会踩到：`core.autocrlf=true`（Windows 默认）会在提交时把 CRLF
+# 转成 LF，所以 blob 是干净的。但别人 clone 时若 `autocrlf=false`，再编辑并提交
+# 就会把 CRLF 带进 blob。显式声明 eol 之后，无论本地配置如何，入库一律 LF。
+*.yml  text eol=lf
+*.yaml text eol=lf

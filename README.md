@@ -100,11 +100,16 @@ docker run -p 8080:8080 ghcr.io/czleexy/webterm:latest      # 打开 http://loca
 
 | 标签 | 平台 | 来源 |
 | --- | --- | --- |
-| `latest` / `main` | `amd64` / `amd64`+`arm64` | 默认分支推送 / 版本标签 |
-| `0.2.0` / `0.2` | `amd64` + `arm64` | 标签 `v0.2.0` |
+| `0.2.0` / `0.2` | **`amd64` + `arm64`** | 标签 `v0.2.0`（稳定版，推荐） |
+| `latest` / `main` | 只 `amd64`（见下） | 默认分支的最近一次推送 |
 | `sha-<完整 commit>` | 同该次构建 | 每次构建唯一，用于回滚或锁定某个提交 |
 
-> 注意 `latest` 会**跟着最近一次构建变**：打 `v*` 标签时它也会被刷成多架构索引。要用稳定的版本请显式写 `0.2.0`，要精确到提交请用 `sha-<commit>`。
+> ⚠️ **`latest` 会跟着最近一次构建变，而且平台也一起变**：常规分支推送只构建 `amd64`，所以推送之后 `latest` 就退回单架构；只有标签/手动构建才会把它刷成多架构。**要用稳定且多架构的镜像，请显式写版本号 `:0.2.0`；要精确到提交，用 `:sha-<commit>`。** Apple Silicon / ARM 机器上是这样：
+
+```bash
+docker run -p 8080:8080 ghcr.io/czleexy/webterm:0.2.0     # 多架构，直接选 arm64
+docker run -p 8080:8080 ghcr.io/czleexy/webterm:latest    # amd64，ARM 机器上会走模拟（能跑但慢）
+```
 
 CI 除了构建，还会**真的把镜像跑起来验一遍**：`docker run -p 8080:8080` → 等 `/api/health` → 断言首页是 `text/html` 且含 `id="root"` → 比对镜像内版本与 `package.json`。所以「镜像能跑」这件事有构建记录可查，不靠人工。
 

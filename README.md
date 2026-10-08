@@ -90,9 +90,38 @@ webterm [选项]
 
 ### ③ Docker
 
+**直接用 CI 构建好的镜像**（推荐，不需要本地 docker build）：
+
+```bash
+docker run -p 8080:8080 ghcr.io/czleexy/webterm:latest      # 打开 http://localhost:8080
+```
+
+镜像由 [`.github/workflows/docker-image.yml`](.github/workflows/docker-image.yml) 在每次推送到 `main` 时构建并发布到 GitHub Container Registry，标签：
+
+| 标签 | 什么时候更新 |
+| --- | --- |
+| `latest` | 默认分支的每次推送 |
+| `main` | 同上，与 `latest` 指向同一层 |
+| `sha-<commit>` | 每次构建唯一，用于回滚或锁定某个提交 |
+| `1.2.3` / `1.2` | 打 `v1.2.3` 这样的标签时 |
+
+CI 除了构建，还会**真的把镜像跑起来验一遍**：`docker run -p 8080:8080` → 等 `/api/health` → 断言首页是 `text/html` 且含 `id="root"` → 比对镜像内版本与 `package.json`。所以「镜像能跑」这件事有构建记录可查，不靠人工。
+
+第一次构建（commit `9f6f0a8`）实测：两个作业全绿，镜像 `linux/amd64`、97.9 MB（压缩后）、以非 root 用户 `node` 运行、带 `HEALTHCHECK`，匿名 `docker pull` 可用（包已随 `org.opencontainers.image.source` 标签关联到本仓库）。
+
+> 如果哪天把包改成了私有，匿名拉取会变成 401。此时要么登录后再拉：
+> ```bash
+> echo "$GITHUB_TOKEN" | docker login ghcr.io -u <你的用户名> --password-stdin
+> ```
+> 要么去 `https://github.com/users/czleexy/packages/container/webterm/settings` → Danger Zone → Change visibility 改回 Public。
+>
+> 常规推送只构建 `linux/amd64`；需要 `linux/arm64`（Apple Silicon、ARM 服务器）请打 `v*` 标签，或在 Actions 页手动触发（`platforms` 输入默认就是 `linux/amd64,linux/arm64`）。
+
+**或者自己构建**：
+
 ```bash
 docker build -t webterm .
-docker run -p 8080:8080 webterm           # 打开 http://localhost:8080
+docker run -p 8080:8080 webterm
 ```
 
 或用 Compose（宿主端口只绑回环，数据落在具名卷里）：
@@ -103,6 +132,9 @@ docker compose up -d --build
 
 两个挂载点：`/data` 放应用数据（SQLite、加密凭据、日志、插件），`/files` 是文件面板「本地」一侧的根 ——
 容器里没有「用户家目录」这个概念，把这侧锁在一个挂载点上，比默认暴露整个容器文件系统合理。
+
+镜像内已经设好 `WEBTERM_HOST=0.0.0.0` 与 `WEBTERM_ALLOW_INSECURE_LAN=1`（容器里绑回环等于端口映射进来也连不上）。
+⚠️ 这**不等于**对外安全：本项目目前没有内置访问认证（见下面「安全边界」），暴露到公网请在前面放一层带认证的反向代理。
 
 ---
 
@@ -932,12 +964,27 @@ node data/tmp/probe-release.mjs --label portable --entry release/webterm/bin/web
 ```
 
 阶段 8 只改前端（设置 / 主题 / 搜索 / 高亮 / 分屏 / 快捷键 / 通知 / i18n / 响应式），
-没有服务端改动，因此服务端套件沿用阶段 7 的结果；阶段 7 及其之前的浏览器套件在阶段 9 之后重跑过，仍全绿。
-阶段 5 的那次重跑顺带修掉了一处**测试判据**问题：原来用 `netstat -ano` 判断端口是否在监听，而 `execSync`
+没有服务端改动，因此服务端套件沿用阶段 7 的结果；阶段 7 及其之前的浏览器套件在阶段 9 之后重跑过，仍全绿。阶段 5 的那次重跑顺带修掉了一处**测试判据**问题：原来用 `netstat -ano` 判断端口是否在监听，而 `execSync`
 起 `cmd.exe` 在受限环境里会 `EBUSY`，「查不了」和「没监听」在结果上无法区分；已改成反向 bind 验证
 （能再 bind 成说明没人监听）——既去掉了对外部命令的依赖，也比 netstat 更接近「这个端口现在归谁」。
 
 运行方式（含端口分配与 `NODE_PATH` 等前置条件）见 [`docs/03-测试指南.md`](docs/03-测试指南.md)。
+
+**容器镜像**由 GitHub Actions 构建并回归，不占用上表：
+
+| 检查 | 位置 | 结果 |
+| --- | --- | --- |
+| 镜像构建 + 推送到 GHCR | [`.github/workflows/docker-image.yml`](.github/workflows/docker-image.yml)　build 作业 | 通过 |
+| `docker run -p 8080:8080` 可访问（阶段 9 验收③） | 同工作流 smoke 作业 | 通过 |
+| 匿名可拉取 / 标签 / 平台 / 用户 / 端口 / 挂载点 | `data/tmp/probe-ghcr.mjs`（从 GHCR 外部探测） | 通过 |
+
+smoke 作业做的是：拉取推送后的镜像 → 起容器 → 轮询 `/api/health` → 断言首页是 `text/html` 且含
+`id="root"` → 比对镜像内 `version` 与 `package.json` 一致。这一步以前是「本地跑一次、写在文档里」，
+现在是每次推送都由 CI 出证据。
+
+> 工作流改动前的落地校验脚本是 `data/tmp/check-workflow.py`（真 YAML 解析 + 结构核对 +
+> 联网确认每个 `uses:` 的版本存在 + 对每段 `run:` 做 `bash -n`）。本机没有 `gh` CLI，
+> 盯运行状态用 `data/tmp/watch-run.mjs`。
 
 ---
 

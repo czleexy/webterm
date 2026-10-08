@@ -9,6 +9,41 @@
 
 ---
 
+## [未发布]
+
+### 新增
+
+- **容器镜像由 CI 构建并发布到 GHCR**：`.github/workflows/docker-image.yml` 在推送到 `main` 时构建
+  并推送 `ghcr.io/czleexy/webterm`（标签 `latest` / `main` / `sha-<commit>` / 语义版本），
+  并有一个 smoke 作业真的把镜像跑起来验收：`docker run -p 8080:8080` → 等 `/api/health`
+  → 断言首页 `text/html` 且含 `id="root"` → 比对镜像内版本与 `package.json`。
+  于是「镜像能跑」这件事由构建记录出证据，不再依赖人工在本地跑一次。
+- 新增 `.gitattributes`：`*.yml` / `*.yaml` 固定 `eol=lf`。CI 的 `run:` 脚本是原样交给 Linux bash 的，
+  文件若以 CRLF 入库会报 `$'\r': command not found` 这类看不出根因的错。
+- 新增落地前校验与运行观察脚本：`data/tmp/check-workflow.py`（解析 + 结构核对 + 确认 `uses:` 版本存在 +
+  对每段 `run:` 做 `bash -n`）、`data/tmp/probe-ghcr.mjs`（从 GHCR **外部匿名**探测可拉取性与镜像元数据）、
+  `data/tmp/watch-run.mjs`（本机无 `gh` CLI，直接打 REST API 盯运行）
+
+### 变更
+
+- 镜像标签改为由 `docker/metadata-action` 生成，并显式覆盖三项：`licenses=MIT`
+  （自动值在没有 LICENSE 文件时为空，会把 Dockerfile 里的声明盖掉）、
+  `version`（分支构建时自动值是分支名 `main`，那是「构建来源」不是「版本」）、
+  `description`（自动值取 GitHub 仓库简介，比 Dockerfile 里的说明还简陋）
+- 平台策略：常规 push 只构建 `linux/amd64`；打 `v*` 标签或手动触发才构建 `amd64+arm64`
+  （arm64 要走 QEMU，项目内有 better-sqlite3 / rolldown / oxide 等原生模块，模拟下慢好几倍）
+- 关闭 buildx 的 provenance 证明：默认会多出一个 `unknown/unknown` 平台条目，
+  Portainer 之类的工具会看得一脸问号
+- README「生产部署 ③ Docker」改为**以拉取 CI 镜像为主**，自建镜像降为备选
+
+### 说明
+
+- 阶段 9 验收清单第 2 条（`docker run -p 8080:8080 webterm` 可访问）**至此有实测证据**：
+  commit `9f6f0a8` 的构建两个作业全绿；外部匿名探测确认可 pull、`linux/amd64`、非 root、
+  暴露 8080、带 `HEALTHCHECK`、97.9 MB（压缩后）
+
+---
+
 ## [0.2.0] - 2026-09-30
 
 阶段 9：插件机制与打包发布。**全部 10 个阶段收口**，功能集合冻结。

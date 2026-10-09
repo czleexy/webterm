@@ -88,6 +88,43 @@ webterm [选项]
 > 全局命令用 `~/.webterm`（`npx` / 全局安装时进程工作目录是随机的，把库落在 `./data` 会让人
 > 「换个目录就丢一次数据」）。两者都可以用 `WEBTERM_DATA_DIR` 或 `-d` 覆盖。
 
+### 老 glibc 发行版（麒麟 V10 / CentOS 7 / UOS 等）
+
+症状：启动报 `Error: /lib/x86_64-linux-gnu/libc.so.6: version 'GLIBC_2.33' not found
+(required by .../node_modules/better-sqlite3/prebuilds/linux-x64.node)`。
+
+原因：`better-sqlite3` 的**预编译二进制**是在较新的 glibc 上构建的，而这些发行版的 glibc 更老
+（麒麟 V10 桌面版 glibc 2.31、服务器版 2.28，都不到 2.33）。这不是 Node 的问题，是原生模块的
+预编译产物与本机 glibc 不匹配。
+
+两条路任选其一：
+
+**路 1：就地源码编译**（发布包已内置 `rebuild-native.sh`，会先做环境诊断再编译）：
+
+```bash
+cd release/webterm
+sh rebuild-native.sh        # 需要系统里有 make / g++(≥10) / python3 / npm
+./start.sh
+```
+
+其内部等价于：删掉 `node_modules/better-sqlite3/prebuilds/` 下的 Linux 预编译 →
+`npm rebuild better-sqlite3`（首次编译会联网下载 Node 头文件）→ 用内存库验证加载。
+
+注意：麒麟桌面 V10 默认的 gcc 9 不支持 C++20（better-sqlite3 v13 的硬要求），先
+`sudo apt install -y g++-10`，再用 `CC=gcc-10 CXX=g++-10 sh rebuild-native.sh` 重跑。
+
+**路 2：改用 Docker 镜像**（最省事，容器内自带 Debian 的 glibc，与宿主机版本无关）：
+
+```bash
+docker run -d --name webterm -p 8080:8080 -v "$PWD/data:/data" ghcr.io/czleexy/webterm:0.2.0
+```
+
+数据挂到宿主 `./data`；容器内以 uid 1000（node 用户）运行，若报权限错误先
+`chown -R 1000 ./data`。
+
+> 另一个常见小坑：启动命令是 `./start.sh`（当前目录前缀），直接敲 `start.sh` 会被 shell
+> 当成「命令不存在」。
+
 ### ③ Docker
 
 **直接用 CI 构建好的镜像**（推荐，不需要本地 docker build）：

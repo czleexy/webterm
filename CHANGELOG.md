@@ -23,6 +23,10 @@
 - 新增落地前校验与运行观察脚本：`data/tmp/check-workflow.py`（解析 + 结构核对 + 确认 `uses:` 版本存在 +
   对每段 `run:` 做 `bash -n`）、`data/tmp/probe-ghcr.mjs`（从 GHCR **外部匿名**探测可拉取性与镜像元数据）、
   `data/tmp/watch-run.mjs`（本机无 `gh` CLI，直接打 REST API 盯运行）
+- **发布包内置 `rebuild-native.sh`**：better-sqlite3 的预编译二进制要求 glibc ≥ 2.33，
+  麒麟 V10 / CentOS 7 这类老 glibc 发行版加载不了。脚本在目标机器上做环境诊断
+  （glibc / 编译器 / 工具链检查，含 GCC < 10 不支持 C++20 的提前拦截）→ 删预编译 →
+  `npm rebuild better-sqlite3` 源码编译 → 内存库验证。README 增补对应排障章节。
 
 ### 变更
 

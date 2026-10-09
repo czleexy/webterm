@@ -158,7 +158,7 @@ const releasePkg = {
   main: 'dist/index.js',
   // files 只影响 `npm pack` 的内容：把运行时真正需要的东西列全，其余（文档、
   // 示例）也一并带上，因为本目录同时要当便携目录用，不能只有 dist。
-  files: ['bin', 'dist', 'web', 'vendor', 'examples', 'README.md', 'CHANGELOG.md', '.env.example'],
+  files: ['bin', 'dist', 'web', 'vendor', 'examples', 'README.md', 'CHANGELOG.md', '.env.example', 'start.sh', 'start.cmd', 'rebuild-native.sh'],
   engines: rootPkg.engines,
   // 把本地路径依赖真正嵌进 tarball。否则 `npm pack` 出的包里只有一句
   // `file:vendor/shared`，别人装的时候这个相对路径在他的环境里不存在。
@@ -204,7 +204,65 @@ const portableSh = [
   'exec node ./bin/webterm.mjs "$@"',
 ].join('\n')
 writeFileSync(path.join(outDir, 'start.sh'), portableSh + '\n')
-console.log('[package]   start.cmd / start.sh（便携启动，数据目录=./data）')
+
+// 老 glibc 发行版（麒麟 V10 / CentOS 7 / UOS 等）的救生艇：better-sqlite3 的
+// 预编译二进制在新 glibc 上构建，这些系统加载不了（报 GLIBC_2.33 not found）。
+// 脚本做的事：诊断 → 检查编译工具 → 删预编译 → 源码编译 → 验证。
+// 为什么不打包时就源码编译？打包机（Windows / CI）产出的 .node 同样带着打包机
+// 的 glibc 需求，问题只会换个地方发作；只有目标机器自己编才保证匹配。
+const rebuildSh = [
+  '#!/usr/bin/env sh',
+  '# WebTerm 原生模块（better-sqlite3）重建脚本',
+  '#',
+  '# 什么时候用：启动时报',
+  '#   GLIBC_2.xx not found (required by .../better-sqlite3/prebuilds/linux-x64.node)',
+  '# 原因：包里自带的预编译二进制是在较新的 glibc 上构建的，麒麟 V10、CentOS 7 这类',
+  '# 老 glibc 发行版加载不了。删掉预编译、就地编译出与本机 glibc 匹配的即可。',
+  'set -e',
+  'cd "$(dirname "$0")"',
+  '',
+  "echo '== 环境诊断 =='",
+  'node --version',
+  'ldd --version 2>/dev/null | head -n 1 || true',
+  "g++ --version 2>/dev/null | head -n 1 || echo 'g++ 未安装'",
+  '',
+  "MISSING=''",
+  'command -v make    >/dev/null 2>&1 || MISSING="$MISSING make"',
+  'command -v g++     >/dev/null 2>&1 || MISSING="$MISSING g++"',
+  'command -v python3 >/dev/null 2>&1 || MISSING="$MISSING python3"',
+  'command -v npm     >/dev/null 2>&1 || MISSING="$MISSING npm"',
+  'if [ -n "$MISSING" ]; then',
+  '  echo "缺少构建工具:$MISSING"',
+  "  echo '  Debian/Ubuntu 系（麒麟桌面 V10）: sudo apt update && sudo apt install -y build-essential python3'",
+  "  echo '  RPM 系（麒麟服务器 V10）        : sudo yum groupinstall -y \"Development Tools\" && sudo yum install -y python3'",
+  '  exit 1',
+  'fi',
+  '',
+  '# better-sqlite3 v13 要求 C++20；GCC < 10 连 -std=c++20 这个写法都不认识，',
+  '# 编译必然失败，与其让用户面对一屏编译错误，不如在这里就拦下来给出两条出路。',
+  'GCC_MAJOR=$(g++ -dumpversion 2>/dev/null | cut -d. -f1)',
+  'if [ -n "$GCC_MAJOR" ] && [ "$GCC_MAJOR" -lt 10 ] 2>/dev/null; then',
+  '  echo "g++ 版本过旧（$GCC_MAJOR），better-sqlite3 v13 需要 C++20（GCC >= 10）。"',
+  "  echo '  两条路：'",
+  "  echo '    1) 装新版编译器后重跑本脚本：'",
+  "  echo '       sudo apt install -y g++-10 && CC=gcc-10 CXX=g++-10 sh rebuild-native.sh'",
+  "  echo '    2) 改用 Docker 镜像（容器自带 glibc，与宿主机版本无关，见 README「③ Docker」）'",
+  '  exit 1',
+  'fi',
+  '',
+  "echo '== 删除与旧 glibc 不兼容的预编译二进制 =='",
+  'rm -f node_modules/better-sqlite3/prebuilds/linux-*.node \\',
+  '      node_modules/better-sqlite3/prebuilds/linuxmusl-*.node',
+  '',
+  "echo '== 从源码编译 better-sqlite3（首次会联网下载 Node 头文件）=='",
+  'npm rebuild better-sqlite3',
+  '',
+  "echo '== 验证 =='",
+  "node -e \"new (require('better-sqlite3'))(':memory:').exec('select 42'); console.log('better-sqlite3 加载 OK')\"",
+  "echo '完成。执行 ./start.sh 启动 WebTerm。'",
+].join('\n')
+writeFileSync(path.join(outDir, 'rebuild-native.sh'), rebuildSh + '\n')
+console.log('[package]   start.cmd / start.sh（便携启动，数据目录=./data）+ rebuild-native.sh（老 glibc 重建）')
 
 // 示例插件不放进 data/plugins 自动加载：一个会定时发通知的插件不该在
 // 用户第一次打开界面时就开始打扰。放在 examples/ 里，README 教用户自己拷。
